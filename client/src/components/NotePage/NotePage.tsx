@@ -1,35 +1,22 @@
-import React, { useCallback, useState } from "react";
-import { Note } from "../../types/notes";
-import { useAutoSaveNote } from "../../hooks/useAutoSaveNote";
+import { useParams } from "react-router-dom";
+import { useNote } from "../../hooks/useNote";
 
 export default function NotePage() {
-  const [note, setNote] = useState<Note>(() => {
-    const saved = localStorage.getItem("note");
-    return saved
-      ? JSON.parse(saved)
-      : { id: "local-note", content: "", updatedAt: Date.now() };
-  });
+  const { id } = useParams<{ id: string }>();
+  const { note, handleContentChange } = useNote(id);
 
-  // Auto-save to localStorage
-  const handleSave = useCallback((newNote: Note) => {
-    localStorage.setItem("note", JSON.stringify(newNote));
-  }, []);
-
-  useAutoSaveNote(note, handleSave);
-
-  //   handle note change
-  const handleNoteChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setNote((prev) => ({ ...prev, content: e.target.value }));
-  };
+  if (!note) {
+    return <p className="text-center mt-10">Loading note...</p>;
+  }
 
   return (
     <div className="container mx-auto px-16 py-8 min-h-screen">
       <textarea
         className="w-full h-full border border-slate-500 p-4"
         rows={20}
-        placeholder="..."
+        placeholder="Start typing..."
         value={note.content}
-        onChange={handleNoteChange}
+        onChange={handleContentChange}
       />
     </div>
   );

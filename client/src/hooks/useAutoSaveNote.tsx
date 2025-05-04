@@ -1,3 +1,5 @@
+// this file is not in use, logic is moved to ./useNote.tsx hook
+
 import { useEffect, useRef } from "react";
 import { Note } from "../types/notes";
 
@@ -18,5 +20,5 @@ export function useAutoSaveNote(
     return () => {
       if (timeout.current) clearTimeout(timeout.current);
     };
-  }, [note.content, delay]);
+  }, [note, delay]);
 }
