@@ -1,53 +1,64 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Note } from "../types/notes";
 import { loadNoteFromStorage, saveNoteToStorage } from "../utils/storage";
-export function useNote(id: string | undefined, delay = 1000) {
-  const [note, setNote] = useState<Note | null>(null);
-  const timeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+export function useNote(id: string | undefined, delay = 1000) {
+  const [inputNote, setInputNote] = useState<Note | null>(null);
+  const [savedNote, setSavedNote] = useState<Note | null>(null);
+  const debounceTimer = useRef<NodeJS.Timeout | null>(null);
+
+  /**
+   * 1. Load the note on mount (initial fetch)
+   * Replace with API call or socket emit to fetch a note
+   */
   useEffect(() => {
     if (!id) return;
 
-    const existingNote = loadNoteFromStorage(id);
-    if (existingNote) {
-      setNote(existingNote);
-    } else {
-      const newNote: Note = {
-        id,
-        content: "",
-        updatedAt: Date.now(),
-      };
-      setNote(newNote);
-      saveNoteToStorage(newNote);
+    const stored = loadNoteFromStorage(id); // Replace with: await fetchNote(id);
+    const initialNote = stored ?? { id, content: "", updatedAt: Date.now() };
+
+    setInputNote(initialNote);
+    setSavedNote(initialNote);
+
+    if (!stored) {
+      saveNoteToStorage(initialNote); // Replace with: await saveNote(initialNote);
     }
   }, [id]);
 
-  useEffect(() => {
-    if (!note) return;
+  /**
+   * 2. Queue a save when content changes (debounced)
+   * Replace saveNoteToStorage with API/socket send
+   */
+  const queueSave = (noteToSave: Note) => {
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
 
-    if (timeout.current) clearTimeout(timeout.current);
+    debounceTimer.current = setTimeout(() => {
+      const updatedNote = { ...noteToSave, updatedAt: Date.now() };
 
-    timeout.current = setTimeout(() => {
-      const updatedNote = { ...note, updatedAt: Date.now() };
-      setNote(updatedNote);
+      // TODO: Replace with API call or socket emit to save note
       saveNoteToStorage(updatedNote);
+      setSavedNote(updatedNote);
     }, delay);
+  };
 
-    return () => {
-      if (timeout.current) clearTimeout(timeout.current);
-    };
-  }, [note, delay]);
+  /**
+   * 3. Handle real-time content updates from the user
+   */
+  const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const newContent = e.target.value;
 
-  const handleContentChange = useCallback(
-    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      const value = e.target.value;
-      setNote((prev) => (prev ? { ...prev, content: value } : prev));
-    },
-    []
-  );
+    setInputNote((prev) => {
+      if (!prev) return prev;
+
+      const updated = { ...prev, content: newContent };
+      queueSave(updated);
+      return updated;
+    });
+  };
 
   return {
-    note,
-    handleContentChange,
+    note: inputNote, // For displaying the current note
+    handleContentChange, // For updating content
+    savedAt: savedNote?.updatedAt, // Useful for "Last saved" status
   };
 }
