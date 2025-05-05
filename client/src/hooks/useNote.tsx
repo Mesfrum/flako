@@ -5,7 +5,7 @@ import { loadNoteFromStorage, saveNoteToStorage } from "../utils/storage";
 export function useNote(id: string | undefined, delay = 1000) {
   const [inputNote, setInputNote] = useState<Note | null>(null);
   const [savedNote, setSavedNote] = useState<Note | null>(null);
-  const debounceTimer = useRef<NodeJS.Timeout | null>(null);
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /**
    * 1. Load the note on mount (initial fetch)
