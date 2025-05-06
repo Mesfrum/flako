@@ -14,8 +14,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-var ErrNoteNotFound = errors.New("note not found")
-
 func FetchNote(w http.ResponseWriter, r *http.Request) {
 	noteID, ok := mux.Vars(r)["note_id"]
 	if !ok || noteID == "" {
@@ -26,7 +24,7 @@ func FetchNote(w http.ResponseWriter, r *http.Request) {
 	note, err := getNoteByID(r.Context(), noteID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			utils.RespondWithError(w, http.StatusNotFound, "Note not found")
+			utils.RespondWithError(w, http.StatusNotFound, "Note not found!")
 		} else {
 			log.Printf("Failed to fetch note %s: %v", noteID, err)
 			utils.RespondWithError(w, http.StatusInternalServerError, "Internal server error")
@@ -52,7 +50,7 @@ func getNoteByID(ctx context.Context, noteID string) (*models.Note, error) {
 	err := db.Conn.QueryRow(ctx, query, noteID).Scan(&note.NoteID, &note.Content, &updatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrNoteNotFound
+			return nil, pgx.ErrNoRows
 		}
 		return nil, err
 	}
