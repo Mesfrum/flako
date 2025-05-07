@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Note } from "../types/notes";
 import { loadNoteFromStorage, saveNoteToStorage } from "../utils/storage";
+import { useFetchNote } from "./fetchNotes/useFetchNote";
 
 export function useNote(id: string | undefined, delay = 1000) {
   const [inputNote, setInputNote] = useState<Note | null>(null);
   const [savedNote, setSavedNote] = useState<Note | null>(null);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { data } = useFetchNote(id ?? "");
 
   /**
    * 1. Load the note on mount (initial fetch)
@@ -14,7 +16,7 @@ export function useNote(id: string | undefined, delay = 1000) {
   useEffect(() => {
     if (!id) return;
 
-    const stored = loadNoteFromStorage(id); // Replace with: await fetchNote(id);
+    const stored = data ?? loadNoteFromStorage(id); // Replace with: await fetchNote(id);
     const initialNote = stored ?? { id, content: "", updatedAt: Date.now() };
 
     setInputNote(initialNote);
@@ -23,7 +25,7 @@ export function useNote(id: string | undefined, delay = 1000) {
     if (!stored) {
       saveNoteToStorage(initialNote); // Replace with: await saveNote(initialNote);
     }
-  }, [id]);
+  }, [id, data]);
 
   /**
    * 2. Queue a save when content changes (debounced)
