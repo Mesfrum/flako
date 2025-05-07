@@ -1,11 +1,14 @@
 package main
 
 import (
-	"github.com/Mesfrum/shribe2e/server/db"
-	"github.com/Mesfrum/shribe2e/server/routes"
-	"github.com/joho/godotenv"
 	"log"
 	"net/http"
+
+	"github.com/joho/godotenv"
+
+	"github.com/Mesfrum/shribe2e/server/db"
+	"github.com/Mesfrum/shribe2e/server/middleware"
+	"github.com/Mesfrum/shribe2e/server/routes"
 )
 
 func main() {
@@ -18,6 +21,7 @@ func main() {
 	db.InitDB()
 
 	router := routes.SetupRoutes()
+	router.Use(middleware.CORS)
 
 	log.Println("Server running on http://localhost:8080")
 	err = http.ListenAndServe(":8080", router)

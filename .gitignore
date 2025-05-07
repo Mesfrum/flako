@@ -1,10 +1,34 @@
-# Created by https://www.toptal.com/developers/gitignore/api/go,visualstudiocode,windows
-# Edit at https://www.toptal.com/developers/gitignore?templates=go,visualstudiocode,windows
+# # # # # Client # # # # #  
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+
+# # # # # Server # # # # #  
 
 ### Go ###
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
 # Binaries for programs and plugins
 *.exe
 *.exe~
@@ -86,3 +110,9 @@ vendor/
 
 tmp/
 main
+
+
+# environment variables files
+.env
+.env.development
+.env.production
