@@ -2,34 +2,29 @@ import { useEffect, useRef, useState } from "react";
 import { Note } from "../types/notes";
 import { loadNoteFromStorage, saveNoteToStorage } from "../utils/storage";
 import { useFetchNote } from "./fetchNotes/useFetchNote";
+import { useUpdateNote } from "./updateNote/useUpdateNote";
 
 export function useNote(id: string | undefined, delay = 1000) {
   const [inputNote, setInputNote] = useState<Note | null>(null);
   const [savedNote, setSavedNote] = useState<Note | null>(null);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { data } = useFetchNote(id ?? "");
+  const updateMutation = useUpdateNote();
 
   /**
-   * 1. Load the note on mount (initial fetch)
-   * Replace with API call or socket emit to fetch a note
+   * Load the note on mount
    */
   useEffect(() => {
-    if (!id) return;
+    if (!id || !data) return;
 
-    const stored = data ?? loadNoteFromStorage(id); // Replace with: await fetchNote(id);
-    const initialNote = stored ?? { id, content: "", updatedAt: Date.now() };
+    setInputNote(data);
+    setSavedNote(data);
+    saveNoteToStorage(data);
 
-    setInputNote(initialNote);
-    setSavedNote(initialNote);
-
-    if (!stored) {
-      saveNoteToStorage(initialNote); // Replace with: await saveNote(initialNote);
-    }
   }, [id, data]);
 
   /**
-   * 2. Queue a save when content changes (debounced)
-   * Replace saveNoteToStorage with API/socket send
+   * Debounced save: now using API call instead of localStorage
    */
   const queueSave = (noteToSave: Note) => {
     if (debounceTimer.current) clearTimeout(debounceTimer.current);
@@ -37,21 +32,27 @@ export function useNote(id: string | undefined, delay = 1000) {
     debounceTimer.current = setTimeout(() => {
       const updatedNote = { ...noteToSave, updatedAt: Date.now() };
 
-      // TODO: Replace with API call or socket emit to save note
-      saveNoteToStorage(updatedNote);
-      setSavedNote(updatedNote);
+      updateMutation.mutate(updatedNote, {
+        onSuccess: (data) => {
+          setSavedNote(data);
+        },
+        onError: (err) => {
+          console.error("API update failed, saving to localStorage", err);
+          saveNoteToStorage(updatedNote); // Fallback local save
+          setSavedNote(updatedNote);
+        },
+      });
     }, delay);
   };
 
   /**
-   * 3. Handle real-time content updates from the user
+   * Real-time content updates
    */
   const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newContent = e.target.value;
 
     setInputNote((prev) => {
       if (!prev) return prev;
-
       const updated = { ...prev, content: newContent };
       queueSave(updated);
       return updated;
@@ -59,8 +60,10 @@ export function useNote(id: string | undefined, delay = 1000) {
   };
 
   return {
-    note: inputNote, // For displaying the current note
-    handleContentChange, // For updating content
-    savedAt: savedNote?.updatedAt, // Useful for "Last saved" status
+    note: inputNote,
+    handleContentChange,
+    savedAt: savedNote?.updatedAt,
+    isSaving: updateMutation.status === "pending",
+    hasError: updateMutation.status === "error",
   };
 }

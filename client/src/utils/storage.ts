@@ -14,5 +14,5 @@ export function loadNoteFromStorage(id: string): Note | null {
 }
 
 export function saveNoteToStorage(note: Note): void {
-  localStorage.setItem(`${STORAGE_PREFIX}${note.id}`, JSON.stringify(note));
+  localStorage.setItem(`${STORAGE_PREFIX}${note.note_id}`, JSON.stringify(note));
 }

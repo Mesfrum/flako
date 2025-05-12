@@ -1,5 +1,5 @@
 export interface Note {
-  id: string; // UUID
+  note_id: string; // UUID
   content: string;
   updatedAt: number; // timestamp
 }
