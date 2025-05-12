@@ -66,3 +66,31 @@ func GetNoteByID(ctx context.Context, noteID string) (*models.Note, error) {
 
 	return &note, nil
 }
+
+func UpdateNote(ctx context.Context, noteID string, newContent string) (*models.Note, error) {
+	const query = `
+		UPDATE notes
+		SET content = $1, updated_at = NOW()
+		WHERE note_id = $2
+		RETURNING note_id, content, updated_at, created_at
+	`
+
+	var (
+		note      models.Note
+		updatedAt time.Time
+		createdAt time.Time
+	)
+
+	err := db.Conn.QueryRow(ctx, query, newContent, noteID).Scan(&note.NoteID, &note.Content, &updatedAt, &createdAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, pgx.ErrNoRows
+		}
+		return nil, err
+	}
+
+	note.UpdatedAt = updatedAt.UnixMilli()
+	note.CreatedAt = createdAt.UnixMilli()
+
+	return &note, nil
+}

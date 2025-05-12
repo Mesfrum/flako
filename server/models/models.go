@@ -7,3 +7,8 @@ type Note struct {
 	CreatedAt int64  `json:"created_at"` // UNIX timestamp in milliseconds
 	IsNew     bool   `json:"is_new"`     // true if newly created
 }
+
+// payload for update request
+type UpdateNoteRequest struct {
+	Content string `json:"content"`
+}
