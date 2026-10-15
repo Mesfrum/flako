@@ -180,11 +180,13 @@ Routing: standard library `http.ServeMux` with Go 1.22+ method/wildcard patterns
 
 ### 5.1 Name handling
 
-- Name = URL path segment after decoding, `trim()` + `toLowerCase()` + NFC
-  normalize. `/Taco` and `/taco` are the same note.
+- Name = the whole URL path after the leading `/` (may contain `/`), decoded,
+  then `trim()` + `toLowerCase()` + NFC normalize. `/Taco` and `/taco` are the
+  same note; non-canonical URLs redirect to the canonical encoded form.
 - Empty name → Home page.
-- Random generator: 4 words from a bundled wordlist (≈ 2048 words → 44 bits)
-  joined by `-`, using `crypto.getRandomValues`.
+- Random generator: 4 words from the bundled EFF large wordlist (7772 words
+  after dropping 4 hyphenated ones → ≈ 51.7 bits) joined by `-`, using
+  `crypto.getRandomValues` with rejection sampling (no modulo bias).
 - Strength hint: rough entropy estimate (length/charset, and a bonus when the
   name matches the generator's shape). Displayed as a plain sentence. Wording
   is a Phase 4 concern; Phase 1 ships functional text.
