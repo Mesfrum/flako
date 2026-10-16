@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Mesfrum/shribe2e/server/internal/store"
+	"github.com/Mesfrum/flako/server/internal/store"
 )
 
 // newMux registers the API and the SPA on one mux. Overlapping patterns with

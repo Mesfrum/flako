@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rebuild shribe2e so that visiting `/<name>` opens an end-to-end encrypted note, derived from the name, autosaved to a SQLite-backed Go server that never sees plaintext or names.
+**Goal:** Rebuild flako so that visiting `/<name>` opens an end-to-end encrypted note, derived from the name, autosaved to a SQLite-backed Go server that never sees plaintext or names.
 
 **Architecture:** Go server (stdlib `net/http`, `modernc.org/sqlite`, hand-written embedded migrations) exposes `GET/PUT /api/notes/{id}` with optimistic concurrency behind a `store.Store` interface. The React client derives `{id, AES key}` from the note name (Argon2id → HKDF), encrypts with AES-GCM (note id as AAD), and runs a framework-agnostic `NoteSync` state machine (debounce, in-flight queueing, conflicts, offline retry with ciphertext-only pending saves) wrapped by a React hook. In prod the Go binary embeds the built client.
 
@@ -12,11 +12,11 @@
 
 ## Global Constraints
 
-- Go module path stays `github.com/Mesfrum/shribe2e/server`; `go` directive `1.24`. Pin `modernc.org/sqlite@v1.38.2` (newer versions require Go 1.26).
+- Go module path stays `github.com/Mesfrum/flako/server`; `go` directive `1.24`. Pin `modernc.org/sqlite@v1.38.2` (newer versions require Go 1.26).
 - No CGO, no Docker, no external services in Phase 1.
 - Server never receives the note name or plaintext. Only `id` (43-char base64url), `ciphertext`, `iv`.
 - Note id regex: `^[A-Za-z0-9_-]{43}$`. IV exactly 12 bytes. Ciphertext ≥ 16 bytes. Body ≤ 1 MiB (`1 << 20`).
-- KDF is frozen: Argon2id(salt `"shribe2e/v1"`, memory 65536 KiB, iterations 3, parallelism 1, length 32) → HKDF-SHA256 (empty salt) with info `"shribe2e/v1/id"` and `"shribe2e/v1/enc"`.
+- KDF is frozen: Argon2id(salt `"flako/v1"`, memory 65536 KiB, iterations 3, parallelism 1, length 32) → HKDF-SHA256 (empty salt) with info `"flako/v1/id"` and `"flako/v1/enc"`.
 - Plaintext format: UTF-8 JSON `{"v":1,"text":"..."}`. AES-256-GCM, fresh random 12-byte IV per encryption, AAD = UTF-8 note id.
 - `localStorage` may only ever hold ciphertext (key `pending:<id>`), never plaintext.
 - Debounce 1000 ms; retry backoff 1s doubling to max 30s.
@@ -167,7 +167,7 @@ func Load(getenv func(string) string) Config {
 - [ ] **Step 5: Run tests and tidy**
 
 Run: `cd server && go test ./... && go mod tidy && go vet ./...`
-Expected: `ok  github.com/Mesfrum/shribe2e/server/internal/config`; `go.mod` now has no `require` block.
+Expected: `ok  github.com/Mesfrum/flako/server/internal/config`; `go.mod` now has no `require` block.
 
 - [ ] **Step 6: Update air, env example, gitignore**
 
@@ -1074,7 +1074,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Mesfrum/shribe2e/server/internal/store"
+	"github.com/Mesfrum/flako/server/internal/store"
 )
 
 var (
@@ -1308,7 +1308,7 @@ import (
 	"net/http"
 	"regexp"
 
-	"github.com/Mesfrum/shribe2e/server/internal/store"
+	"github.com/Mesfrum/flako/server/internal/store"
 )
 
 const maxBodyBytes = 1 << 20 // 1 MiB
@@ -1631,7 +1631,7 @@ Expected: PASS.
 
 `server/cmd/server/main.go`:
 ```go
-// Command server runs the shribe2e HTTP server.
+// Command server runs the flako HTTP server.
 package main
 
 import (
@@ -1645,9 +1645,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Mesfrum/shribe2e/server/internal/config"
-	"github.com/Mesfrum/shribe2e/server/internal/httpapi"
-	"github.com/Mesfrum/shribe2e/server/internal/store"
+	"github.com/Mesfrum/flako/server/internal/config"
+	"github.com/Mesfrum/flako/server/internal/httpapi"
+	"github.com/Mesfrum/flako/server/internal/store"
 )
 
 func main() {
@@ -1826,7 +1826,7 @@ export default defineConfig({
 });
 ```
 
-`client/index.html`: change `<title>Vite + React + TS</title>` to `<title>shribe2e</title>` (leave the rest of the restored file as is).
+`client/index.html`: change `<title>Vite + React + TS</title>` to `<title>flako</title>` (leave the rest of the restored file as is).
 
 `client/src/index.css` (replace whole file; Tailwind's preflight already resets styles):
 ```css
@@ -2152,7 +2152,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Produces:
   ```ts
   // crypto/derive.ts
-  export const KDF_PARAMS: { salt: "shribe2e/v1"; memorySize: 65536; iterations: 3; parallelism: 1; hashLength: 32 }
+  export const KDF_PARAMS: { salt: "flako/v1"; memorySize: 65536; iterations: 3; parallelism: 1; hashLength: 32 }
   export interface NoteKeys { id: string; key: CryptoKey }
   export function deriveNoteKeys(normalizedName: string): Promise<NoteKeys>
   // crypto/cipher.ts
@@ -2322,7 +2322,7 @@ import { deriveNoteKeys, KDF_PARAMS } from "./derive";
 describe("deriveNoteKeys", () => {
   it("pins the KDF parameters — changing them orphans every existing note", () => {
     expect(KDF_PARAMS).toEqual({
-      salt: "shribe2e/v1",
+      salt: "flako/v1",
       memorySize: 65536,
       iterations: 3,
       parallelism: 1,
@@ -2331,9 +2331,9 @@ describe("deriveNoteKeys", () => {
   });
 
   it("matches known answers (computed once, frozen forever)", async () => {
-    expect((await deriveNoteKeys("taco")).id).toBe("6FtmzKyqjPkciZD5tFWteVioMluJNfC75VgWq8TQso4");
+    expect((await deriveNoteKeys("taco")).id).toBe("DqMCETSlWMyiBEuz-TOWLYfWY4EYFz8GGBMm0p3Xl1M");
     expect((await deriveNoteKeys("velvet-anchor-mutters-softly")).id).toBe(
-      "wHzqbAMTzGD_sueeNeZveMlHgSh6G3NaPkJ-CPXdZDA",
+      "hwzWX5YnQyJukfK1YDpSa7y3DJZUqq5E8AdjYFThQ-o",
     );
   });
 
@@ -2378,7 +2378,7 @@ import { toBase64Url, utf8 } from "./encoding";
  * same key), so security rests on Argon2's cost and on the name's strength.
  */
 export const KDF_PARAMS = {
-  salt: "shribe2e/v1",
+  salt: "flako/v1",
   memorySize: 65536, // KiB = 64 MiB
   iterations: 3,
   parallelism: 1,
@@ -2412,9 +2412,9 @@ export async function deriveNoteKeys(normalizedName: string): Promise<NoteKeys> 
     info: utf8(info),
   });
 
-  const idBits = await crypto.subtle.deriveBits(hkdf("shribe2e/v1/id"), hkdfKey, 256);
+  const idBits = await crypto.subtle.deriveBits(hkdf("flako/v1/id"), hkdfKey, 256);
   const key = await crypto.subtle.deriveKey(
-    hkdf("shribe2e/v1/enc"),
+    hkdf("flako/v1/enc"),
     hkdfKey,
     { name: "AES-GCM", length: 256 },
     false,
@@ -2441,7 +2441,7 @@ Expected: all PASS, including the known-answer test.
 
 ## Crypto: HKDF
 - Fast way to split one strong secret into many independent keys using different `info` labels.
-- Knowing the derived id ("shribe2e/v1/id") reveals nothing about the encryption key ("shribe2e/v1/enc").
+- Knowing the derived id ("flako/v1/id") reveals nothing about the encryption key ("flako/v1/enc").
 
 ## Crypto: AES-GCM, IVs, AAD
 - GCM = encryption + authentication tag (16 bytes). Any flipped bit → decrypt fails.
@@ -3548,7 +3548,7 @@ export default function Home() {
 
   return (
     <main className="mx-auto flex min-h-screen max-w-xl flex-col justify-center gap-4 p-6">
-      <h1 className="text-2xl font-bold">shribe2e</h1>
+      <h1 className="text-2xl font-bold">flako</h1>
       <p className="text-sm">
         Pick a name. The name is the key: anyone who knows it can read and edit the note, and the server never
         learns it.
@@ -3882,7 +3882,7 @@ Expected: PASS.
 
 - [ ] **Step 3: Mount it in main**
 
-In `server/cmd/server/main.go`, add the import `"github.com/Mesfrum/shribe2e/server/internal/web"` and, right after `httpapi.New(st, logger).Routes(mux)`, add:
+In `server/cmd/server/main.go`, add the import `"github.com/Mesfrum/flako/server/internal/web"` and, right after `httpapi.New(st, logger).Routes(mux)`, add:
 ```go
 	mux.Handle("GET /", web.Handler()) // everything that isn't /api or /healthz
 ```
@@ -3914,17 +3914,17 @@ server/internal/web/dist/*
 
 ```bash
 cd client && npm run build
-cd ../server && go vet ./... && go test ./... && go build -o tmp/shribe2e.exe ./cmd/server
+cd ../server && go vet ./... && go test ./... && go build -o tmp/flako.exe ./cmd/server
 ```
 Expected: Vite writes to `server/internal/web/dist/`; `.gitkeep` is present afterwards (`ls -a server/internal/web/dist`); all Go tests pass; binary builds.
 
-Run `./tmp/shribe2e.exe` (background) and open `http://localhost:8080/some-note` directly (refresh-safe deep link). Verify: editor loads, typing saves, reload restores text, `curl -s localhost:8080/api/nope` returns JSON 404, `curl -s -o /dev/null -w '%{http_code}' localhost:8080/assets/nope.js` prints `404`. `git status` shows no files under `server/internal/web/dist/` except possibly `.gitkeep`.
+Run `./tmp/flako.exe` (background) and open `http://localhost:8080/some-note` directly (refresh-safe deep link). Verify: editor loads, typing saves, reload restores text, `curl -s localhost:8080/api/nope` returns JSON 404, `curl -s -o /dev/null -w '%{http_code}' localhost:8080/assets/nope.js` prints `404`. `git status` shows no files under `server/internal/web/dist/` except possibly `.gitkeep`.
 
 - [ ] **Step 6: Write the README**
 
 `README.md`:
 ````markdown
-# shribe2e
+# flako
 
 A shrib-style notepad: go to `/<any-name>` and start typing. The name is the key — notes are
 encrypted in your browser (Argon2id → HKDF → AES-256-GCM) and the server only ever stores
@@ -3953,8 +3953,8 @@ cd client && npm test
 
 ```bash
 cd client && npm run build            # writes into server/internal/web/dist
-cd server && go build -o shribe2e ./cmd/server
-./shribe2e                            # UI + API on :8080
+cd server && go build -o flako ./cmd/server
+./flako                            # UI + API on :8080
 ```
 
 Env vars (optional): `ADDR` (default `:8080`), `DB_PATH` (default `./data/notes.db`).

@@ -24,7 +24,7 @@ COPY --from=frontend-build /src/server/internal/web/dist ./internal/web/dist
 
 RUN CGO_ENABLED=0 GOOS=linux \
     go build -trimpath -ldflags="-s -w" \
-    -o /out/shribe-server ./cmd/server
+    -o /out/flako-server ./cmd/server
 
 # Small runtime image; no Node or Go compiler needed.
 FROM alpine:3.22 AS runtime
@@ -35,7 +35,7 @@ RUN apk add --no-cache ca-certificates \
     && chown app:app /data
 
 WORKDIR /app
-COPY --from=go-build /out/shribe-server /usr/local/bin/shribe-server
+COPY --from=go-build /out/flako-server /usr/local/bin/flako-server
 
 ENV ADDR=:8080
 ENV DB_PATH=/data/notes.db
@@ -43,4 +43,4 @@ ENV DB_PATH=/data/notes.db
 EXPOSE 8080
 USER app
 
-ENTRYPOINT ["/usr/local/bin/shribe-server"]
+ENTRYPOINT ["/usr/local/bin/flako-server"]

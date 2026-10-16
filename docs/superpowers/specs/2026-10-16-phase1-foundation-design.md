@@ -5,7 +5,7 @@ Status: Approved design, pending spec review
 
 ## 1. Context & Intent
 
-shribe2e is a shrib.com-style notepad: visit `/<any-name>` and a note exists there.
+flako is a shrib.com-style notepad: visit `/<any-name>` and a note exists there.
 The original 2025 prototype (React + Go + Supabase) stored notes in plaintext and
 never implemented the planned encryption. This rebuild is:
 
@@ -60,7 +60,7 @@ name, deployment, Docker.
 ## 3. Layout
 
 ```
-shribe2e/
+flako/
 ├── LEARNING.md
 ├── docs/superpowers/specs/
 ├── server/
@@ -194,10 +194,10 @@ Routing: standard library `http.ServeMux` with Go 1.22+ method/wildcard patterns
 ### 5.2 Key derivation (`crypto/derive.ts`)
 
 ```
-master = Argon2id(password = name, salt = "shribe2e/v1",
+master = Argon2id(password = name, salt = "flako/v1",
                   memory = 64 MiB, iterations = 3, parallelism = 1, length = 32)
-id     = base64url(HKDF-SHA256(master, salt = empty, info = "shribe2e/v1/id",  32 bytes))
-encKey = HKDF-SHA256(master, salt = empty, info = "shribe2e/v1/enc") → AES-GCM-256 CryptoKey, non-extractable
+id     = base64url(HKDF-SHA256(master, salt = empty, info = "flako/v1/id",  32 bytes))
+encKey = HKDF-SHA256(master, salt = empty, info = "flako/v1/enc") → AES-GCM-256 CryptoKey, non-extractable
 ```
 
 - Argon2id via `hash-wasm`; HKDF and AES via WebCrypto (`crypto.subtle`).

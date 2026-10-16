@@ -1,4 +1,4 @@
-module github.com/Mesfrum/shribe2e/server
+module github.com/Mesfrum/flako/server
 
 go 1.24
 

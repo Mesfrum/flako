@@ -1,4 +1,6 @@
 
+name: flako  # fixes the compose project (and volume) names regardless of the folder name
+
 services:
   app:
     build:

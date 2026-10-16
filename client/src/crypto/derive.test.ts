@@ -5,7 +5,7 @@ import { deriveNoteKeys, KDF_PARAMS } from "./derive";
 describe("deriveNoteKeys", () => {
   it("pins the KDF parameters — changing them orphans every existing note", () => {
     expect(KDF_PARAMS).toEqual({
-      salt: "shribe2e/v1",
+      salt: "flako/v1",
       memorySize: 65536,
       iterations: 3,
       parallelism: 1,
@@ -14,9 +14,9 @@ describe("deriveNoteKeys", () => {
   });
 
   it("matches known answers (computed once, frozen forever)", async () => {
-    expect((await deriveNoteKeys("taco")).id).toBe("6FtmzKyqjPkciZD5tFWteVioMluJNfC75VgWq8TQso4");
+    expect((await deriveNoteKeys("taco")).id).toBe("DqMCETSlWMyiBEuz-TOWLYfWY4EYFz8GGBMm0p3Xl1M");
     expect((await deriveNoteKeys("velvet-anchor-mutters-softly")).id).toBe(
-      "wHzqbAMTzGD_sueeNeZveMlHgSh6G3NaPkJ-CPXdZDA",
+      "hwzWX5YnQyJukfK1YDpSa7y3DJZUqq5E8AdjYFThQ-o",
     );
   });
 

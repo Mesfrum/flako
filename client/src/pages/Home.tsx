@@ -15,7 +15,7 @@ export default function Home() {
 
   return (
     <main className="mx-auto flex min-h-screen max-w-xl flex-col justify-center gap-4 p-6">
-      <h1 className="text-2xl font-bold">shribe2e</h1>
+      <h1 className="text-2xl font-bold">flako</h1>
       <p className="text-sm">
         Pick a name. The name is the key: anyone who knows it can read and edit the note, and the server never
         learns it.

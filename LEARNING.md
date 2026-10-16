@@ -118,7 +118,7 @@ One entry per concept, written for future-me coming back after a long break.
 
 ## Crypto: HKDF
 - Fast way to split one strong secret into many independent keys using different `info` labels.
-- Knowing the derived id ("shribe2e/v1/id") reveals nothing about the encryption key ("shribe2e/v1/enc").
+- Knowing the derived id ("flako/v1/id") reveals nothing about the encryption key ("flako/v1/enc").
 
 ## Crypto: AES-GCM, IVs, AAD
 - GCM = encryption + authentication tag (16 bytes). Any flipped bit → decrypt fails.

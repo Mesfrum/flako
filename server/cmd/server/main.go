@@ -1,4 +1,4 @@
-// Command server runs the shribe2e HTTP server.
+// Command server runs the flako HTTP server.
 package main
 
 import (
@@ -12,10 +12,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Mesfrum/shribe2e/server/internal/config"
-	"github.com/Mesfrum/shribe2e/server/internal/httpapi"
-	"github.com/Mesfrum/shribe2e/server/internal/store"
-	"github.com/Mesfrum/shribe2e/server/internal/web"
+	"github.com/Mesfrum/flako/server/internal/config"
+	"github.com/Mesfrum/flako/server/internal/httpapi"
+	"github.com/Mesfrum/flako/server/internal/store"
+	"github.com/Mesfrum/flako/server/internal/web"
 )
 
 func main() {

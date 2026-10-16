@@ -1,4 +1,4 @@
-# shribe2e
+# flako
 
 A shrib-style notepad: go to `/#/<any-name>` and start typing. The name is the key — notes are
 encrypted in your browser (Argon2id → HKDF → AES-256-GCM) and the server only ever stores
@@ -27,8 +27,8 @@ cd client && npm test
 
 ```bash
 cd client && npm run build            # writes into server/internal/web/dist
-cd server && go build -o shribe2e ./cmd/server
-./shribe2e                            # UI + API on :8080
+cd server && go build -o flako ./cmd/server
+./flako                            # UI + API on :8080
 ```
 
 Env vars (optional): `ADDR` (default `:8080`), `DB_PATH` (default `./data/notes.db`).

@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"regexp"
 
-	"github.com/Mesfrum/shribe2e/server/internal/store"
+	"github.com/Mesfrum/flako/server/internal/store"
 )
 
 const maxBodyBytes = 1 << 20 // 1 MiB

@@ -7,7 +7,7 @@ import { toBase64Url, utf8 } from "./encoding";
  * same key), so security rests on Argon2's cost and on the name's strength.
  */
 export const KDF_PARAMS = {
-  salt: "shribe2e/v1",
+  salt: "flako/v1",
   memorySize: 65536, // KiB = 64 MiB
   iterations: 3,
   parallelism: 1,
@@ -41,9 +41,9 @@ export async function deriveNoteKeys(normalizedName: string): Promise<NoteKeys> 
     info: utf8(info),
   });
 
-  const idBits = await crypto.subtle.deriveBits(hkdf("shribe2e/v1/id"), hkdfKey, 256);
+  const idBits = await crypto.subtle.deriveBits(hkdf("flako/v1/id"), hkdfKey, 256);
   const key = await crypto.subtle.deriveKey(
-    hkdf("shribe2e/v1/enc"),
+    hkdf("flako/v1/enc"),
     hkdfKey,
     { name: "AES-GCM", length: 256 },
     false,

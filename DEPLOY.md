@@ -42,7 +42,7 @@ Browsers only allow WebCrypto — which does all the encryption — on HTTPS ori
 curl -fsSL https://get.docker.com | sudo sh
 sudo usermod -aG docker $USER && newgrp docker
 
-git clone https://github.com/Mesfrum/shribe2e.git && cd shribe2e
+git clone https://github.com/Mesfrum/flako.git && cd flako
 cp .env.example .env && nano .env        # set DOMAIN=...
 docker compose up -d --build
 docker compose logs -f caddy             # watch it obtain the certificate
@@ -59,10 +59,10 @@ git pull && docker compose up -d --build
 
 ## 6. Back up the notes
 
-The database lives in the `shribe2e_sqlite_data` volume. Until Litestream (Phase 5), copy it out:
+The database lives in the `flako_sqlite_data` volume. Until Litestream (Phase 5), copy it out:
 
 ```bash
-docker run --rm -v shribe2e_sqlite_data:/data -v "$PWD":/backup alpine \
+docker run --rm -v flako_sqlite_data:/data -v "$PWD":/backup alpine \
   tar czf /backup/notes-$(date +%F).tgz -C /data .
 ```
 

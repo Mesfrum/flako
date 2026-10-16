@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Mesfrum/shribe2e/server/internal/store"
+	"github.com/Mesfrum/flako/server/internal/store"
 )
 
 var (

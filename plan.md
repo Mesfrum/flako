@@ -101,7 +101,7 @@ setInterval(() => {
 ## 🗂️ Suggested Project Structure
 
 ```
-/shribe2e/
+/flako/
 ├── frontend/
 │   ├── index.html
 │   ├── app.js         # editor + crypto
