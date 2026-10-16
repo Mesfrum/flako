@@ -58,3 +58,18 @@ One entry per concept, written for future-me coming back after a long break.
 ## SQLite: WAL + busy_timeout
 - WAL lets readers read while one writer writes. SQLite allows one writer at a time.
 - `busy_timeout(5000)`: wait up to 5s for the write lock instead of failing immediately with SQLITE_BUSY.
+
+## Go: net/http (1.22+ routing)
+- `mux.HandleFunc("GET /api/notes/{id}", h)`; read the wildcard with `r.PathValue("id")`.
+- Most specific pattern wins: `"/api/"` only gets what `"GET /api/notes/{id}"` didn't match.
+- A handler is anything with `ServeHTTP(w, r)`; `http.HandlerFunc(f)` adapts a function.
+
+## Go: JSON
+- Struct tags: `json:"base_version"`. `DisallowUnknownFields()` rejects surprises.
+- Use a pointer (`*int64`) when "missing" and "zero" must differ.
+- Generic helper `decode[T any](...)` — Go has generics since 1.18.
+
+## Go: defensive HTTP
+- `http.MaxBytesReader` caps request bodies; detect with `errors.As(err, &*http.MaxBytesError)` → 413.
+- Log internal errors, return a generic "internal error" — never leak internals.
+- `httptest.NewRecorder()` + `handler.ServeHTTP(rec, req)` tests handlers with no network.
