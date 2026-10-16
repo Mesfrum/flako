@@ -10,7 +10,7 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
-dist
+client/dist
 dist-ssr
 *.local
 
@@ -116,3 +116,8 @@ main
 .env
 .env.development
 .env.production
+# SQLite data
+server/data/
+
+# Plan-execution scratch
+.superpowers/
