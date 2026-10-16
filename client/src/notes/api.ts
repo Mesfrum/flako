@@ -55,6 +55,9 @@ export function isRetryable(err: unknown): boolean {
   return err.status >= 500 || err.status === 408 || err.status === 429; // timeout / rate limit: try later
 }
 
+/** Same limit the server enforces (httpapi.maxBodyBytes). */
+export const MAX_BODY_BYTES = 1 << 20;
+
 export type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
 
 interface NoteBody {
@@ -91,14 +94,18 @@ export function createNotesApi(
     },
 
     async putNote(id, encrypted, baseVersion) {
+      const payload = JSON.stringify({
+        ciphertext: toBase64(encrypted.ciphertext),
+        iv: toBase64(encrypted.iv),
+        base_version: baseVersion,
+      });
+      // The server would answer 413 anyway; don't upload a megabyte to hear it.
+      // (The body is ASCII, so string length = bytes.)
+      if (payload.length > MAX_BODY_BYTES) throw new TooLargeError();
       const res = await send(`/notes/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ciphertext: toBase64(encrypted.ciphertext),
-          iv: toBase64(encrypted.iv),
-          base_version: baseVersion,
-        }),
+        body: payload,
       });
       if (res.status === 409) {
         const body = (await res.json()) as { current_version: number };

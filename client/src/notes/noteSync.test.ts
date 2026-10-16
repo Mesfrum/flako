@@ -392,6 +392,32 @@ describe("review fixes: nothing typed is lost", () => {
   });
 });
 
+describe("two tabs share one pending slot", () => {
+  it("a successful save in tab B keeps tab A's offline copy", async () => {
+    const api = new FakeApi();
+    const pending = createPendingStore(memoryStorage());
+    const tab = (debounceMs: number) =>
+      new NoteSync("any-name", { api, pending, derive: async () => ({ id: ID, key }), debounceMs });
+    const a = tab(1000);
+    const b = tab(100);
+    await a.start();
+    await b.start();
+
+    api.failures.push(new NetworkError());
+    a.setText("written offline in A");
+    vi.advanceTimersByTime(1000);
+    await until(() => state(a) === "ready:unsaved", "A unsaved");
+
+    b.setText("saved by B");
+    vi.advanceTimersByTime(100); // B's debounce fires; A's 1s retry has not
+    await until(() => state(b) === "ready:clean", "B clean");
+
+    const kept = pending.load(ID);
+    expect(kept).not.toBeNull();
+    expect(await decryptNote(key, ID, kept!.encrypted)).toBe("written offline in A");
+  });
+});
+
 describe("review fixes: conflicts stay put", () => {
   it("typing during a save that conflicts does not fire a second stale PUT", async () => {
     const { api, sync } = setup();

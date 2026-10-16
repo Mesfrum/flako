@@ -53,6 +53,20 @@ func TestLoggingRecordsStatus(t *testing.T) {
 	}
 }
 
+func TestLoggingKeepsResponseControllerFeatures(t *testing.T) {
+	// Phase 2 WebSockets hijack the connection through http.ResponseController,
+	// which needs the wrapper to Unwrap to the real ResponseWriter.
+	logger, _ := newBufferLogger()
+	var flushErr error
+	h := Logging(logger)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		flushErr = http.NewResponseController(w).Flush()
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/x", nil))
+	if flushErr != nil {
+		t.Fatalf("Flush through Logging: %v", flushErr)
+	}
+}
+
 func TestLoggingNeverRecordsPagePaths(t *testing.T) {
 	// A page path may be a note name (the key), e.g. from an old-style /<name> link.
 	ok := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})

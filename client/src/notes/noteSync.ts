@@ -56,6 +56,9 @@ export class NoteSync {
   private disposed = false;
   private flushAfterSettle = false; // dispose() arrived while a save was in flight
   private pendingSeq = 0; // bumps on every pending write/clear; stale async writes are dropped
+  // IV of the pending entry this tab wrote or adopted. Tabs share one slot per note, so
+  // a tab may only clear its own entry, never another tab's offline copy.
+  private pendingIv: Uint8Array | null = null;
 
   constructor(name: string, deps: NoteSyncDeps) {
     this.name = name;
@@ -176,9 +179,11 @@ export class NoteSync {
     try {
       text = await decryptNote(keys.key, keys.id, pending.encrypted);
     } catch {
+      this.pendingIv = pending.encrypted.iv;
       this.clearPending(keys.id); // not ours / corrupt: drop it
       return;
     }
+    this.pendingIv = pending.encrypted.iv; // adopted: our save will replace it
     if (run !== this.run) return;
     this.version = pending.baseVersion; // if the server moved on, the PUT will 409 → conflict
     this.dirty = true;
@@ -265,17 +270,21 @@ export class NoteSync {
     const seq = ++this.pendingSeq;
     const encrypted = await encryptNote(keys.key, keys.id, this.snapshot.text);
     if (seq !== this.pendingSeq) return; // a newer write or a clear happened meanwhile
+    this.pendingIv = encrypted.iv;
     this.deps.pending.save(keys.id, { encrypted, baseVersion: this.version });
   }
 
   private savePending(id: string, pending: PendingSave) {
     this.pendingSeq++;
+    this.pendingIv = pending.encrypted.iv;
     this.deps.pending.save(id, pending);
   }
 
   private clearPending(id: string) {
     this.pendingSeq++;
-    this.deps.pending.clear(id);
+    if (!this.pendingIv) return; // nothing of ours is stored
+    this.deps.pending.clear(id, this.pendingIv);
+    this.pendingIv = null;
   }
 
   private setSave(save: SaveState): void {

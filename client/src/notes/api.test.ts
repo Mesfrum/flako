@@ -71,6 +71,13 @@ describe("putNote", () => {
     await expect(createNotesApi(fn).putNote(ID, enc, 0)).rejects.toBeInstanceOf(TooLargeError);
   });
 
+  it("refuses a body over the server's 1 MiB limit without sending it", async () => {
+    const { fn, calls } = fakeFetch(() => json(200, { version: 1, updated_at: 1 }));
+    const huge = { ciphertext: new Uint8Array(800_000), iv: new Uint8Array(12) }; // ~1.07 MB as base64
+    await expect(createNotesApi(fn).putNote(ID, huge, 0)).rejects.toBeInstanceOf(TooLargeError);
+    expect(calls).toHaveLength(0);
+  });
+
   it("maps a thrown fetch to NetworkError", async () => {
     const fn: FetchFn = async () => {
       throw new TypeError("Failed to fetch");

@@ -10,7 +10,8 @@ export interface PendingSave {
 export interface PendingStore {
   load(id: string): PendingSave | null;
   save(id: string, pending: PendingSave): void;
-  clear(id: string): void;
+  /** Removes the entry; with `iv`, only if the stored entry is that exact ciphertext. */
+  clear(id: string, iv?: Uint8Array): void;
 }
 
 export type KeyValueStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -55,7 +56,15 @@ export function createPendingStore(storage: KeyValueStorage): PendingStore {
       }
     },
 
-    clear(id) {
+    clear(id, iv) {
+      if (iv) {
+        const raw = storage.getItem(keyFor(id));
+        try {
+          if (!raw || (JSON.parse(raw) as Partial<StoredPending>).iv !== toBase64(iv)) return;
+        } catch {
+          return;
+        }
+      }
       storage.removeItem(keyFor(id));
     },
   };

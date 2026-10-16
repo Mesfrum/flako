@@ -25,6 +25,15 @@ describe("pending store", () => {
     expect(store.load(ID)).toBeNull();
   });
 
+  it("clear with an iv only removes the entry with that iv", () => {
+    const store = createPendingStore(memoryStorage());
+    store.save(ID, save);
+    store.clear(ID, new Uint8Array(12).fill(1)); // someone else's entry: keep it
+    expect(store.load(ID)).toEqual(save);
+    store.clear(ID, save.encrypted.iv);
+    expect(store.load(ID)).toBeNull();
+  });
+
   it("ignores corrupt entries", () => {
     const storage = memoryStorage();
     storage.setItem(`pending:${ID}`, "{not json");
