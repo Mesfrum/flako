@@ -90,3 +90,23 @@ One entry per concept, written for future-me coming back after a long break.
 
 ## Go: log/slog
 - `slog.New(slog.NewTextHandler(os.Stdout, nil)).Info("msg", "key", value, ...)` → `msg=... key=value`.
+
+## Web: base64 vs base64url
+- base64 uses `+ / =`, which mean things in URLs. base64url swaps to `- _` and drops `=`.
+- 32 bytes → 43 base64url chars: that's our note id.
+
+## Unicode: NFC normalization
+- "é" can be U+00E9 or "e" + U+0301. They look identical but are different bytes → different keys!
+- `s.normalize("NFC")` makes them identical. Anything that feeds a hash/KDF must be normalized first.
+
+## Crypto: modulo bias
+- `randomUint32 % n` slightly favours small results unless 2^32 is a multiple of n.
+- Fix: reject values ≥ the largest multiple of n below 2^32, draw again (rejection sampling).
+
+## Crypto: passphrase entropy
+- 4 words from 7772 → 4 × log2(7772) ≈ 51.7 bits. Each bit doubles an attacker's work.
+- Length alone lies: "correcthorse" is 2 dictionary words, not 12 random letters.
+
+## Tooling: Vite proxy + Vitest
+- `server.proxy: { "/api": "http://localhost:8080" }` — dev browser sees one origin, so no CORS.
+- Vitest reuses the Vite config; `environment: "node"` works because Node 20 has WebCrypto built in.
