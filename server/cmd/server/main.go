@@ -15,6 +15,7 @@ import (
 	"github.com/Mesfrum/shribe2e/server/internal/config"
 	"github.com/Mesfrum/shribe2e/server/internal/httpapi"
 	"github.com/Mesfrum/shribe2e/server/internal/store"
+	"github.com/Mesfrum/shribe2e/server/internal/web"
 )
 
 func main() {
@@ -40,8 +41,7 @@ func run() error {
 	}
 	defer st.Close()
 
-	mux := http.NewServeMux()
-	httpapi.New(st, logger).Routes(mux)
+	mux := newMux(st, logger)
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
@@ -73,4 +73,14 @@ func run() error {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	return nil
+}
+
+// newMux wires the API and the embedded client onto one router.
+func newMux(st store.Store, logger *slog.Logger) *http.ServeMux {
+	mux := http.NewServeMux()
+	httpapi.New(st, logger).Routes(mux)
+	// No method in the pattern: "GET /" would conflict with "/api/" (narrower method,
+	// broader path — neither wins). The SPA handler rejects non-GET/HEAD itself.
+	mux.Handle("/", web.Handler()) // everything that isn't /api or /healthz
+	return mux
 }

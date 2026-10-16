@@ -8,6 +8,10 @@ export default defineConfig({
     // Browser talks only to Vite; Vite forwards API calls to Go. Same origin, no CORS.
     proxy: { "/api": "http://localhost:8080" },
   },
+  build: {
+    outDir: "../server/internal/web/dist",
+    emptyOutDir: true, // wipes .gitkeep too; postbuild restores it
+  },
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],

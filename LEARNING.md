@@ -167,3 +167,20 @@ One entry per concept, written for future-me coming back after a long break.
 ## Routing: canonical URLs without loops
 - Decode the path, normalize, compare with the *decoded* path; redirect only if they differ.
 - Comparing encoded vs decoded strings would redirect forever on names with spaces.
+
+## Go: embedding a frontend
+- `//go:embed all:dist` — `all:` includes dotfiles; a pattern that matches nothing fails to compile, so a committed `.gitkeep` keeps it valid.
+- `fs.Sub(embedded, "dist")` re-roots the FS; `http.FileServerFS(fsys)` serves it (Go 1.22+).
+
+## Web: SPA fallback
+- Client-side routes (`/taco`) don't exist as files; serve `index.html` for unknown paths so refresh works.
+- But return 404 for missing `/assets/*` — serving HTML as JavaScript produces baffling errors.
+
+## Deploy shape
+- One Go binary (API + UI) + one SQLite file. That's what Phase 5 will ship.
+
+## Go gotcha: ServeMux pattern conflicts panic at startup
+- Two patterns that overlap where neither is more specific make `mux.Handle` panic: `"GET /"` (narrower method,
+  broader path) vs `"/api/"` (broader method, narrower path).
+- Fix: register the catch-all as `"/"` (so `"/api/"` is strictly more specific) and check the method inside the handler.
+- A test that builds the *real* mux (`newMux`) catches this; handler tests on their own mux never will.

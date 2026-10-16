@@ -121,3 +121,7 @@ server/data/
 
 # Plan-execution scratch
 .superpowers/
+
+# Built client embedded into the Go binary (keep the placeholder)
+server/internal/web/dist/*
+!server/internal/web/dist/.gitkeep
