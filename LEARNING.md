@@ -184,3 +184,9 @@ One entry per concept, written for future-me coming back after a long break.
   broader path) vs `"/api/"` (broader method, narrower path).
 - Fix: register the catch-all as `"/"` (so `"/api/"` is strictly more specific) and check the method inside the handler.
 - A test that builds the *real* mux (`newMux`) catches this; handler tests on their own mux never will.
+
+## Go gotchas: nil interfaces and defer in loops
+- An interface holding a typed nil is NOT nil: `var ce *ConflictError; var err error = ce; err != nil` is **true**.
+  Return a literal `nil` for "no error", never a nil pointer of a concrete error type.
+- `defer` runs when the *function* returns, not the loop iteration. `for _, f := range files { x.Open(); defer x.Close() }`
+  keeps every file open until the end. Move the body into a helper function (like `applyMigration`) so each defer fires per item.
