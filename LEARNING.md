@@ -139,3 +139,19 @@ One entry per concept, written for future-me coming back after a long break.
 
 ## Security: what goes in localStorage
 - Any script on the page can read localStorage. We store pending saves as ciphertext only, so a leak reveals nothing.
+
+## Design: state machines outside the UI
+- `NoteSync` is a plain class with explicit states; React only renders them. Easy to unit-test, easy to reason about.
+- Debounce = reset a timer on every keystroke; save when it finally fires.
+- Single-flight = never two saves at once; edits during a save set `dirty`, which triggers exactly one follow-up.
+
+## Design: run counters vs stale async work
+- Every `start()`/`dispose()` bumps `run`; each async step checks `if (run !== this.run) return`.
+- Needed because React StrictMode (dev only) mounts → unmounts → mounts effects to expose bugs like this.
+
+## Design: exponential backoff
+- Retry after 1s, 2s, 4s… capped at 30s: gentle on a struggling server, quick when it's a blip.
+
+## Testing: fake timers + real async
+- `vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })` → `vi.advanceTimersByTime(ms)` fires timers instantly.
+- WebCrypto runs on Node's thread pool, outside fake time; wait for it by yielding with real `setImmediate` in a loop.
