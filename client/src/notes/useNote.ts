@@ -16,9 +16,15 @@ export function useNote(name: string) {
   useEffect(() => {
     void sync.start();
     const onOnline = () => sync.retryNow();
+    // Closing the tab skips React cleanup, so ask the browser to warn while text is unsaved.
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (sync.hasUnsavedWork()) e.preventDefault();
+    };
     window.addEventListener("online", onOnline);
+    window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
       window.removeEventListener("online", onOnline);
+      window.removeEventListener("beforeunload", onBeforeUnload);
       sync.dispose();
     };
   }, [sync]);

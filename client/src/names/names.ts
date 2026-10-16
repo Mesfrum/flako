@@ -2,7 +2,9 @@ import { WORDLIST } from "./wordlist";
 
 /** Canonical form of a note name. Equal names → equal keys, so this must be stable forever. */
 export function normalizeName(raw: string): string {
-  return raw.normalize("NFC").trim().toLowerCase();
+  // Lowercase BEFORE NFC: lowercasing can create sequences NFC composes further, so this
+  // order is a fixed point (normalizeName(normalizeName(x)) === normalizeName(x)).
+  return raw.toLowerCase().normalize("NFC").trim();
 }
 
 /** Uniform random integer in [0, n), without modulo bias. */
@@ -38,20 +40,14 @@ const DEFAULT_WORDSET = new Set(WORDLIST);
 
 /** Rough entropy estimate in bits. Deliberately pessimistic about wordlist names. */
 export function estimateStrength(name: string, words: readonly string[] = WORDLIST): Strength {
-  const bits = estimateBits(name, words);
-  const level: StrengthLevel = bits < 35 ? "weak" : bits < 50 ? "fair" : "strong";
-  return { bits: Math.round(bits), level, message: MESSAGES[level] };
-}
-
-function estimateBits(name: string, words: readonly string[]): number {
   const wordset = words === WORDLIST ? DEFAULT_WORDSET : new Set(words);
   const parts = name.split("-");
-  if (parts.length >= 2 && parts.every((p) => wordset.has(p))) {
-    return parts.length * Math.log2(words.length);
-  }
-  let pool = 0;
-  if (/[a-z]/.test(name)) pool += 26;
-  if (/[0-9]/.test(name)) pool += 10;
-  if (/[^a-z0-9]/.test(name)) pool += 33;
-  return pool === 0 ? 0 : name.length * Math.log2(pool);
+  const generated = parts.length >= 2 && parts.every((p) => wordset.has(p));
+  // Generator-shaped names: each word is a uniform pick from the list. Anything a person
+  // typed is guessed with dictionaries and patterns, not brute force: ~2 bits per character
+  // (roughly the entropy of English text), and never "strong", however long it is.
+  const bits = generated ? parts.length * Math.log2(words.length) : name.length * 2;
+  let level: StrengthLevel = bits < 35 ? "weak" : bits < 50 ? "fair" : "strong";
+  if (!generated && level === "strong") level = "fair";
+  return { bits: Math.round(bits), level, message: MESSAGES[level] };
 }

@@ -50,7 +50,9 @@ export class TooLargeError extends Error {
 
 /** Worth trying again later: the network or the server hiccupped, not our request. */
 export function isRetryable(err: unknown): boolean {
-  return err instanceof NetworkError || (err instanceof HttpError && err.status >= 500);
+  if (err instanceof NetworkError) return true;
+  if (!(err instanceof HttpError)) return false;
+  return err.status >= 500 || err.status === 408 || err.status === 429; // timeout / rate limit: try later
 }
 
 export type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;

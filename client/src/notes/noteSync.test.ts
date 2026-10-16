@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { decryptNote, encryptNote, type EncryptedNote } from "../crypto/cipher";
-import { ConflictError, NetworkError, TooLargeError, type NotesApi, type RemoteNote } from "./api";
+import { ConflictError, HttpError, NetworkError, TooLargeError, type NotesApi, type RemoteNote } from "./api";
 import { NoteSync } from "./noteSync";
 import { createPendingStore, memoryStorage } from "./pending";
 
@@ -276,5 +276,139 @@ describe("other failures", () => {
     await first;
     expect(sync.getSnapshot().text).toBe("hello");
     expect(state(sync)).toBe("ready:clean");
+  });
+});
+
+describe("review fixes: nothing typed is lost", () => {
+  const pendingText = async (pending: ReturnType<typeof createPendingStore>) => {
+    const p = pending.load(ID);
+    return p ? decryptNote(key, ID, p.encrypted) : null;
+  };
+  async function untilAsync(predicate: () => Promise<boolean>, what: string) {
+    for (let i = 0; i < 2000; i++) {
+      if (await predicate()) return;
+      await new Promise<void>((r) => realSetImmediate(r));
+    }
+    throw new Error(`timed out waiting for ${what}`);
+  }
+  const reopen = (api: FakeApi, pending: ReturnType<typeof createPendingStore>) =>
+    new NoteSync("any-name", { api, pending, derive: async () => ({ id: ID, key }), debounceMs: 1000 });
+
+  it("dispose after recovering from offline clears pending, so reopening is clean (no false conflict)", async () => {
+    const { api, pending, sync } = setup();
+    await sync.start();
+    api.failures.push(new NetworkError());
+    sync.setText("old");
+    vi.advanceTimersByTime(1000);
+    await until(() => state(sync) === "ready:unsaved", "unsaved");
+    sync.setText("old plus new");
+    sync.dispose(); // server is back: the dispose flush succeeds
+    await until(() => api.notes.get(ID)?.version === 1, "dispose flush saved");
+    await until(() => pending.load(ID) === null, "pending cleared");
+
+    const again = reopen(api, pending);
+    await again.start();
+    expect(again.getSnapshot().text).toBe("old plus new");
+    expect(state(again)).toBe("ready:clean");
+  });
+
+  it("dispose while still offline keeps the latest text in pending", async () => {
+    const { api, pending, sync } = setup();
+    await sync.start();
+    api.failures.push(new NetworkError(), new NetworkError());
+    sync.setText("v1");
+    vi.advanceTimersByTime(1000);
+    await until(() => state(sync) === "ready:unsaved", "unsaved");
+    sync.setText("v1 v2");
+    sync.dispose();
+    await until(() => api.putCalls === 2, "dispose flush attempted");
+    await untilAsync(async () => (await pendingText(pending)) === "v1 v2", "pending holds v1 v2");
+  });
+
+  it("dispose during an in-flight save still sends the newer keystrokes", async () => {
+    const { api, sync } = setup();
+    await sync.start();
+    let release!: () => void;
+    api.gate = new Promise((r) => (release = r));
+    sync.setText("first");
+    vi.advanceTimersByTime(1000);
+    await until(() => api.putCalls === 1, "first PUT");
+    sync.setText("first second");
+    sync.dispose();
+    api.gate = null;
+    release();
+    await until(() => api.putCalls === 2 && api.notes.get(ID)?.version === 2, "follow-up after dispose");
+    expect(await remoteText(api)).toBe("first second");
+  });
+
+  it("typing while offline keeps pending up to date between retries", async () => {
+    const { api, pending, sync } = setup();
+    await sync.start();
+    api.failures.push(new NetworkError());
+    sync.setText("draft");
+    vi.advanceTimersByTime(1000);
+    await until(() => state(sync) === "ready:unsaved", "unsaved");
+    sync.setText("draft, much longer now");
+    await untilAsync(async () => (await pendingText(pending)) === "draft, much longer now", "pending updated");
+  });
+
+  it("typing under the conflict banner keeps pending up to date", async () => {
+    const { api, pending, sync } = setup();
+    await seedRemote(api, "base", 1);
+    await sync.start();
+    await seedRemote(api, "theirs", 2);
+    sync.setText("mine");
+    vi.advanceTimersByTime(1000);
+    await until(() => state(sync) === "ready:conflict", "conflict");
+    sync.setText("mine, still typing");
+    await untilAsync(async () => (await pendingText(pending)) === "mine, still typing", "pending updated");
+    expect(pending.load(ID)!.baseVersion).toBe(1); // reload must still conflict, not overwrite
+  });
+
+  it("a non-retryable server error keeps the text in pending", async () => {
+    const { api, pending, sync } = setup();
+    await sync.start();
+    api.failures.push(new HttpError(400));
+    sync.setText("rejected words");
+    vi.advanceTimersByTime(1000);
+    await until(() => state(sync) === "error", "error");
+    expect(await pendingText(pending)).toBe("rejected words");
+  });
+
+  it("reports unsaved work so the page can warn before closing", async () => {
+    const { api, sync } = setup();
+    await sync.start();
+    expect(sync.hasUnsavedWork()).toBe(false);
+    sync.setText("x");
+    expect(sync.hasUnsavedWork()).toBe(true);
+    vi.advanceTimersByTime(1000);
+    await until(() => state(sync) === "ready:clean", "clean");
+    expect(sync.hasUnsavedWork()).toBe(false);
+    api.failures.push(new NetworkError());
+    sync.setText("y");
+    vi.advanceTimersByTime(1000);
+    await until(() => state(sync) === "ready:unsaved", "unsaved");
+    expect(sync.hasUnsavedWork()).toBe(true);
+  });
+});
+
+describe("review fixes: conflicts stay put", () => {
+  it("typing during a save that conflicts does not fire a second stale PUT", async () => {
+    const { api, sync } = setup();
+    await seedRemote(api, "base", 1);
+    await sync.start();
+    await seedRemote(api, "theirs", 2);
+    let release!: () => void;
+    api.gate = new Promise((r) => (release = r));
+    sync.setText("mine");
+    vi.advanceTimersByTime(1000);
+    await until(() => api.putCalls === 1, "first PUT");
+    sync.setText("mine more"); // arms the debounce while the doomed save is in flight
+    api.gate = null;
+    release();
+    await until(() => state(sync) === "ready:conflict", "conflict");
+    vi.advanceTimersByTime(5000);
+    for (let i = 0; i < 50; i++) await new Promise<void>((r) => realSetImmediate(r)); // let any stray PUT start
+    expect(api.putCalls).toBe(1);
   });
 });

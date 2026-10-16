@@ -15,6 +15,13 @@ describe("normalizeName", () => {
     expect(normalizeName(" My Notes/Work ")).toBe("my notes/work");
   });
 
+  it("is idempotent, even for Greek letters with stacked combining marks", () => {
+    for (const raw of ["Άͅ", "Ϊ́", "Άͅ", "Café", "  Taco "]) {
+      const once = normalizeName(raw);
+      expect(normalizeName(once)).toBe(once);
+    }
+  });
+
   it("returns empty for blank input", () => {
     expect(normalizeName("   ")).toBe("");
   });
@@ -58,6 +65,17 @@ describe("estimateStrength", () => {
   it("scores wordlist names by word count, not characters", () => {
     // two long words are still only two guesses-from-a-list
     expect(estimateStrength(`${WORDLIST[0]}-${WORDLIST[1]}`).level).toBe("weak");
+  });
+
+  it.each(["password123", "hello-world", "iloveyou2024", "aaaaaaaaaaaa", "grocery list", "my-secret-notes"])(
+    "never calls a human-chosen name like %j strong",
+    (name) => {
+      expect(estimateStrength(name).level).not.toBe("strong");
+    },
+  );
+
+  it("calls short human-chosen names weak", () => {
+    expect(estimateStrength("password123").level).toBe("weak");
   });
 
   it("gives a human-readable message", () => {

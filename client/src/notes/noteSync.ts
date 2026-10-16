@@ -1,7 +1,7 @@
 import { DecryptError, decryptNote, encryptNote } from "../crypto/cipher";
 import type { NoteKeys } from "../crypto/derive";
 import { ConflictError, TooLargeError, isRetryable, type NotesApi } from "./api";
-import type { PendingStore } from "./pending";
+import type { PendingSave, PendingStore } from "./pending";
 
 export type SaveState =
   | { kind: "clean"; savedAt: number | null } // savedAt null: nothing on the server yet
@@ -52,7 +52,10 @@ export class NoteSync {
   private debounceTimer: ReturnType<typeof setTimeout> | undefined;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private retryDelayMs = FIRST_RETRY_MS;
-  private run = 0; // bumps on start/dispose; async work from an older run is ignored
+  private run = 0; // bumps on start/dispose; UI updates from an older run are ignored
+  private disposed = false;
+  private flushAfterSettle = false; // dispose() arrived while a save was in flight
+  private pendingSeq = 0; // bumps on every pending write/clear; stale async writes are dropped
 
   constructor(name: string, deps: NoteSyncDeps) {
     this.name = name;
@@ -70,6 +73,7 @@ export class NoteSync {
 
   async start(): Promise<void> {
     const run = ++this.run;
+    this.disposed = false;
     this.set({ status: { kind: "deriving" } });
     try {
       const keys = await this.deps.derive(this.name);
@@ -104,8 +108,18 @@ export class NoteSync {
     // Conflict waits for the user; unsaved has a retry timer; saving re-flushes when done.
     const keep = save.kind === "conflict" || save.kind === "unsaved" || save.kind === "saving";
     this.set({ text, status: { kind: "ready", save: keep ? save : { kind: "dirty" } } });
-    if (save.kind === "conflict" || save.kind === "unsaved") return;
+    if (save.kind === "conflict" || save.kind === "unsaved") {
+      // No save is coming soon, so keep the stored ciphertext current in case the tab closes.
+      void this.persistPending();
+      return;
+    }
     this.scheduleSave();
+  };
+
+  /** True while something typed has not reached the server (the page warns before closing). */
+  hasUnsavedWork = (): boolean => {
+    const status = this.snapshot.status;
+    return status.kind === "ready" && status.save.kind !== "clean";
   };
 
   resolveConflict = async (choice: "theirs" | "mine"): Promise<void> => {
@@ -120,7 +134,7 @@ export class NoteSync {
         const text = remote ? await decryptNote(keys.key, keys.id, remote) : "";
         if (run !== this.run) return;
         this.dirty = false;
-        this.deps.pending.clear(keys.id);
+        this.clearPending(keys.id);
         this.set({ text, status: { kind: "ready", save: { kind: "clean", savedAt: remote?.updatedAt ?? null } } });
       } else {
         this.dirty = true;
@@ -143,7 +157,11 @@ export class NoteSync {
   };
 
   dispose(): void {
-    if (this.dirty) void this.flush(); // best effort: send what was typed in the last second
+    this.disposed = true;
+    // Best effort: send what was typed in the last second. A save already in flight
+    // re-flushes when it settles, so the newest keystrokes are not dropped.
+    if (this.inFlight) this.flushAfterSettle = true;
+    else if (this.dirty) void this.flush();
     this.run++;
     clearTimeout(this.debounceTimer);
     clearTimeout(this.retryTimer);
@@ -158,7 +176,7 @@ export class NoteSync {
     try {
       text = await decryptNote(keys.key, keys.id, pending.encrypted);
     } catch {
-      this.deps.pending.clear(keys.id); // not ours / corrupt: drop it
+      this.clearPending(keys.id); // not ours / corrupt: drop it
       return;
     }
     if (run !== this.run) return;
@@ -173,24 +191,31 @@ export class NoteSync {
     this.debounceTimer = setTimeout(() => void this.flush(), this.debounceMs);
   }
 
+  /**
+   * Persistence (version, pending) always happens, even after dispose, so a
+   * closed editor never leaves stale pending text behind. Only UI updates and
+   * timers are skipped once this run is no longer live.
+   */
   private async flush(): Promise<void> {
     const keys = this.keys;
     if (!keys || this.inFlight || !this.dirty) return;
     const run = this.run;
+    const live = () => run === this.run && !this.disposed;
     clearTimeout(this.retryTimer);
     this.retryTimer = undefined;
     this.inFlight = true;
     this.dirty = false;
-    this.setSave({ kind: "saving" });
+    if (live()) this.setSave({ kind: "saving" });
 
     try {
-      const encrypted = await encryptNote(keys.key, keys.id, this.snapshot.text);
+      const sentText = this.snapshot.text;
+      const encrypted = await encryptNote(keys.key, keys.id, sentText);
       try {
         const res = await this.deps.api.putNote(keys.id, encrypted, this.version);
-        if (run !== this.run) return;
         this.version = res.version;
+        this.clearPending(keys.id);
+        if (!live()) return;
         this.retryDelayMs = FIRST_RETRY_MS;
-        this.deps.pending.clear(keys.id);
         if (this.dirty) {
           this.setSave({ kind: "dirty" });
           this.scheduleSave();
@@ -198,15 +223,21 @@ export class NoteSync {
           this.setSave({ kind: "clean", savedAt: res.updatedAt });
         }
       } catch (err) {
-        if (run !== this.run) return;
         this.dirty = true;
+        if (err instanceof TooLargeError) {
+          clearTimeout(this.debounceTimer);
+          if (live()) this.setSave({ kind: "tooLarge" });
+          return;
+        }
+        // Keep the newest text, not just what this attempt sent.
+        const latest =
+          this.snapshot.text === sentText ? encrypted : await encryptNote(keys.key, keys.id, this.snapshot.text);
+        this.savePending(keys.id, { encrypted: latest, baseVersion: this.version });
+        if (err instanceof ConflictError) clearTimeout(this.debounceTimer); // a stale PUT would just 409 again
+        if (!live()) return;
         if (err instanceof ConflictError) {
-          this.deps.pending.save(keys.id, { encrypted, baseVersion: this.version });
           this.setSave({ kind: "conflict" });
-        } else if (err instanceof TooLargeError) {
-          this.setSave({ kind: "tooLarge" });
         } else if (isRetryable(err)) {
-          this.deps.pending.save(keys.id, { encrypted, baseVersion: this.version });
           const delay = this.retryDelayMs;
           this.retryDelayMs = Math.min(delay * 2, MAX_RETRY_MS);
           this.setSave({ kind: "unsaved", retryInMs: delay });
@@ -220,7 +251,31 @@ export class NoteSync {
       }
     } finally {
       this.inFlight = false;
+      if (this.flushAfterSettle) {
+        this.flushAfterSettle = false;
+        void this.flush(); // no-op unless edits arrived during the save
+      }
     }
+  }
+
+  /** Re-encrypt the current text into pending (used while no save is scheduled soon). */
+  private async persistPending(): Promise<void> {
+    const keys = this.keys;
+    if (!keys) return;
+    const seq = ++this.pendingSeq;
+    const encrypted = await encryptNote(keys.key, keys.id, this.snapshot.text);
+    if (seq !== this.pendingSeq) return; // a newer write or a clear happened meanwhile
+    this.deps.pending.save(keys.id, { encrypted, baseVersion: this.version });
+  }
+
+  private savePending(id: string, pending: PendingSave) {
+    this.pendingSeq++;
+    this.deps.pending.save(id, pending);
+  }
+
+  private clearPending(id: string) {
+    this.pendingSeq++;
+    this.deps.pending.clear(id);
   }
 
   private setSave(save: SaveState): void {

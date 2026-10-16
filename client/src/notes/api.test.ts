@@ -87,4 +87,9 @@ describe("isRetryable", () => {
     expect(isRetryable(new ConflictError(1))).toBe(false);
     expect(isRetryable(new TooLargeError())).toBe(false);
   });
+
+  it("retries request-timeout and rate-limit responses (proxies send these)", () => {
+    expect(isRetryable(new HttpError(408))).toBe(true);
+    expect(isRetryable(new HttpError(429))).toBe(true);
+  });
 });
