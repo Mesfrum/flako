@@ -132,3 +132,10 @@ One entry per concept, written for future-me coming back after a long break.
 
 ## Web: WebCrypto
 - `crypto.subtle` is async and keeps keys inside the browser; `extractable: false` means even our own JS can't read the raw key.
+
+## Web: fetch semantics
+- `fetch` rejects ONLY when no response arrives (offline, DNS, CORS). A 500 resolves with `res.ok === false`.
+- Turn statuses into typed errors once (`ConflictError`, `TooLargeError`...) and use `instanceof` everywhere else.
+
+## Security: what goes in localStorage
+- Any script on the page can read localStorage. We store pending saves as ciphertext only, so a leak reveals nothing.
