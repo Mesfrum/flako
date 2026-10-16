@@ -155,3 +155,15 @@ One entry per concept, written for future-me coming back after a long break.
 ## Testing: fake timers + real async
 - `vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })` → `vi.advanceTimersByTime(ms)` fires timers instantly.
 - WebCrypto runs on Node's thread pool, outside fake time; wait for it by yielding with real `setImmediate` in a loop.
+
+## React: external stores
+- `useSyncExternalStore(subscribe, getSnapshot)` re-renders when `getSnapshot()` returns a new reference.
+- Keep `getSnapshot` cheap and stable (return the same object until something changes).
+
+## React: effects and StrictMode
+- `useEffect` returns a cleanup; in dev StrictMode runs effect → cleanup → effect to catch missing cleanups.
+- `key={name}` on a component resets all its state when the key changes.
+
+## Routing: canonical URLs without loops
+- Decode the path, normalize, compare with the *decoded* path; redirect only if they differ.
+- Comparing encoded vs decoded strings would redirect forever on names with spaces.
