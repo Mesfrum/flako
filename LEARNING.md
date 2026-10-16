@@ -73,3 +73,20 @@ One entry per concept, written for future-me coming back after a long break.
 - `http.MaxBytesReader` caps request bodies; detect with `errors.As(err, &*http.MaxBytesError)` → 413.
 - Log internal errors, return a generic "internal error" — never leak internals.
 - `httptest.NewRecorder()` + `handler.ServeHTTP(rec, req)` tests handlers with no network.
+
+## Go: middleware
+- Shape: `func(next http.Handler) http.Handler`. Compose by nesting: `Logging(Recover(mux))` — outermost runs first.
+- Struct embedding: `type statusRecorder struct{ http.ResponseWriter; status int }` inherits every method; override just `WriteHeader`.
+- `defer func(){ if v := recover(); v != nil {...} }()` catches panics in the same goroutine only.
+
+## Go: context and graceful shutdown
+- `context.Context` carries cancellation + deadlines through calls (`r.Context()`, `ctx` params first by convention).
+- `signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)` → ctx cancelled on Ctrl+C.
+- `srv.Shutdown(ctx)` stops accepting, waits for in-flight requests (up to the ctx deadline).
+- `main` → `run() error` pattern: `os.Exit` skips defers, so keep cleanup inside `run`.
+
+## Go gotcha: server timeouts
+- The zero `http.Server` has no timeouts — slow clients can hold connections forever. Always set `ReadHeaderTimeout` etc.
+
+## Go: log/slog
+- `slog.New(slog.NewTextHandler(os.Stdout, nil)).Info("msg", "key", value, ...)` → `msg=... key=value`.
