@@ -110,3 +110,25 @@ One entry per concept, written for future-me coming back after a long break.
 ## Tooling: Vite proxy + Vitest
 - `server.proxy: { "/api": "http://localhost:8080" }` — dev browser sees one origin, so no CORS.
 - Vitest reuses the Vite config; `environment: "node"` works because Node 20 has WebCrypto built in.
+
+## Crypto: slow vs fast hashes
+- SHA-256 is built to be fast: billions of guesses/second on a GPU. Terrible for passwords.
+- Argon2id is built to be slow AND memory-hungry (64 MB per guess here), so GPUs barely help.
+- Our names are passwords; "taco" is still weak — slowness only buys time per guess.
+
+## Crypto: HKDF
+- Fast way to split one strong secret into many independent keys using different `info` labels.
+- Knowing the derived id ("shribe2e/v1/id") reveals nothing about the encryption key ("shribe2e/v1/enc").
+
+## Crypto: AES-GCM, IVs, AAD
+- GCM = encryption + authentication tag (16 bytes). Any flipped bit → decrypt fails.
+- IV (nonce) must never repeat under one key: reuse leaks plaintext XORs and lets attackers forge.
+  We draw 12 random bytes per save.
+- AAD: authenticated but not encrypted. We put the note id there, so blobs can't be swapped between notes.
+
+## Crypto: known-answer tests
+- Derivation must never change, or every note becomes unreadable. A test with a hard-coded expected
+  output (computed once) catches accidental changes to salt, params, or info strings.
+
+## Web: WebCrypto
+- `crypto.subtle` is async and keeps keys inside the browser; `extractable: false` means even our own JS can't read the raw key.
