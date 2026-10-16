@@ -35,3 +35,26 @@ One entry per concept, written for future-me coming back after a long break.
 
 ## Testing: contract tests
 - One suite (`runContract`) run against every implementation guarantees they behave identically.
+
+## Go: database/sql
+- `sql.Open` returns a *pool*, not a connection; it's safe to share. `Ping` actually connects.
+- Drivers register via a blank import: `import _ "modernc.org/sqlite"`.
+- `QueryRow(...).Scan(&a, &b)`; no row → `sql.ErrNoRows`. `Exec` → `RowsAffected()`.
+- Transactions: `tx, _ := db.BeginTx(ctx, nil); defer tx.Rollback(); ...; tx.Commit()` — the deferred Rollback is a no-op after Commit.
+
+## Go: //go:embed and io/fs
+- `//go:embed migrations/*.sql` + `var f embed.FS` puts files inside the binary.
+- Accept `fs.FS` in functions; prod passes the `embed.FS`, tests pass `fstest.MapFS{...}`.
+
+## Databases: migrations
+- Numbered SQL files + a `schema_migrations` table recording which ran. Each runs in a transaction.
+- Never edit a shipped migration; add a new one. Fresh machines get the schema automatically.
+
+## Databases: avoiding races with atomic statements
+- Read-then-write ("SELECT version; if ok UPDATE") has a gap where another writer sneaks in.
+- Instead: `INSERT ... ON CONFLICT DO NOTHING` and `UPDATE ... WHERE version = ?` — the DB checks and writes in one step.
+- This is **optimistic concurrency**: assume no conflict, detect it, let the client decide.
+
+## SQLite: WAL + busy_timeout
+- WAL lets readers read while one writer writes. SQLite allows one writer at a time.
+- `busy_timeout(5000)`: wait up to 5s for the write lock instead of failing immediately with SQLITE_BUSY.
