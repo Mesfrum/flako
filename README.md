@@ -1,6 +1,6 @@
 # shribe2e
 
-A shrib-style notepad: go to `/<any-name>` and start typing. The name is the key — notes are
+A shrib-style notepad: go to `/#/<any-name>` and start typing. The name is the key — notes are
 encrypted in your browser (Argon2id → HKDF → AES-256-GCM) and the server only ever stores
 ciphertext under a hash of the name. Personal project; see `LEARNING.md` for everything it teaches
 and `docs/superpowers/specs/` for the design.

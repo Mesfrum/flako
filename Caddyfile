@@ -1,0 +1,17 @@
+# DOMAIN comes from .env (e.g. notes.example.com, or 203-0-113-7.sslip.io for a bare IP).
+# Caddy fetches and renews a Let's Encrypt certificate automatically. HTTPS is required:
+# browsers only expose WebCrypto (all of our encryption) on secure origins.
+{$DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		# The URL path is the note name, i.e. the key: never send it to other sites.
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	reverse_proxy app:8080
+}

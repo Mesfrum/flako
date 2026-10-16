@@ -190,3 +190,9 @@ One entry per concept, written for future-me coming back after a long break.
   Return a literal `nil` for "no error", never a nil pointer of a concrete error type.
 - `defer` runs when the *function* returns, not the loop iteration. `for _, f := range files { x.Open(); defer x.Close() }`
   keeps every file open until the end. Move the body into a helper function (like `applyMigration`) so each defer fires per item.
+
+## Web: the URL fragment never reaches the server
+- In `https://site/#/taco`, everything after `#` stays in the browser: it is not in the HTTP request,
+  server logs, proxy logs, or the `Referer` header. A path (`/taco`) is sent on every page load.
+- When the name is the key, it belongs in the fragment. `HashRouter` routes on `location.hash`.
+- Defence in depth: the request logger still records page paths as `[page]`, in case an old-style link is used.

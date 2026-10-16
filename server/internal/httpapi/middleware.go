@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"time"
 )
 
@@ -28,12 +29,21 @@ func Logging(logger *slog.Logger) func(http.Handler) http.Handler {
 			next.ServeHTTP(rec, r)
 			logger.Info("request",
 				"method", r.Method,
-				"path", r.URL.Path,
+				"path", logPath(r.URL.Path),
 				"status", rec.status,
 				"duration_ms", time.Since(start).Milliseconds(),
 			)
 		})
 	}
+}
+
+// logPath keeps API, asset and health paths, and hides everything else: a page
+// path may be a note name (from an old-style /<name> link), and the name is the key.
+func logPath(p string) string {
+	if p == "/" || p == "/healthz" || strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/assets/") {
+		return p
+	}
+	return "[page]"
 }
 
 // Recover converts a panic in a handler into a 500 so one bad request cannot

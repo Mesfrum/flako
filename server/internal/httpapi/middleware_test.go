@@ -45,10 +45,30 @@ func TestLoggingRecordsStatus(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			logger, logs := newBufferLogger()
-			Logging(logger)(tc.handler).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/thing", nil))
-			if !strings.Contains(logs.String(), tc.want) || !strings.Contains(logs.String(), "path=/thing") {
+			Logging(logger)(tc.handler).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/thing", nil))
+			if !strings.Contains(logs.String(), tc.want) || !strings.Contains(logs.String(), "path=/api/thing") {
 				t.Errorf("log %q missing %q or path", logs, tc.want)
 			}
 		})
+	}
+}
+
+func TestLoggingNeverRecordsPagePaths(t *testing.T) {
+	// A page path may be a note name (the key), e.g. from an old-style /<name> link.
+	ok := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	cases := map[string]string{
+		"/my-secret-diary":        "path=[page]",
+		"/my%20notes/work":        "path=[page]",
+		"/api/notes/" + "x":       "path=/api/notes/x",
+		"/assets/index-abc123.js": "path=/assets/index-abc123.js",
+		"/healthz":                "path=/healthz",
+		"/":                       "path=/",
+	}
+	for path, want := range cases {
+		logger, logs := newBufferLogger()
+		Logging(logger)(ok).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", path, nil))
+		if !strings.Contains(logs.String(), want) || strings.Contains(logs.String(), "secret") || strings.Contains(logs.String(), "notes/work") {
+			t.Errorf("GET %s logged %q, want %q and no page path", path, logs, want)
+		}
 	}
 }

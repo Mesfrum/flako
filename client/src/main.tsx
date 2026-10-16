@@ -1,13 +1,19 @@
 import { StrictMode } from "react";
 import ReactDOM from "react-dom/client";
-import { BrowserRouter } from "react-router-dom";
+import { HashRouter } from "react-router-dom";
 import App from "./App";
 import "./index.css";
+import { legacyPathToHash } from "./routing";
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
-  </StrictMode>,
-);
+const legacy = legacyPathToHash(location.pathname, location.search, location.hash);
+if (legacy) {
+  location.replace(legacy);
+} else {
+  ReactDOM.createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <HashRouter>
+        <App />
+      </HashRouter>
+    </StrictMode>,
+  );
+}

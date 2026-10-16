@@ -1,0 +1,12 @@
+
+.git
+**/node_modules
+**/tmp
+**/coverage
+server/data/
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+!.env.example
