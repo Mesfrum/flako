@@ -25,6 +25,9 @@ const (
 	closeBadMessage websocket.StatusCode = 4400
 )
 
+// maxPresenceBytes caps one sealed cursor message (a couple of ids and a colour, encrypted).
+const maxPresenceBytes = 4096
+
 // Options are the hub's limits. DefaultOptions holds the production values.
 type Options struct {
 	MaxPeers         int           // connections per note
@@ -64,6 +67,7 @@ type room struct {
 type peer struct {
 	id     int
 	conn   *websocket.Conn
+	kick   sync.Once   // closes a too-slow peer at most once
 	direct chan []byte // replies to this peer (welcome, catch-up, ack, pong): sender waits
 	bcast  chan []byte // messages from others: never waited on; full = too slow
 }
@@ -106,7 +110,11 @@ func (h *Hub) serve(ctx context.Context, cancel context.CancelFunc, conn *websoc
 	}
 
 	p := &peer{conn: conn, direct: make(chan []byte), bcast: make(chan []byte, h.opts.SendBuffer)}
-	here := h.join(id, p) // join before reading the log, so no broadcast is missed
+	here, ok := h.join(id, p) // join before reading the log, so no broadcast is missed
+	if !ok {
+		conn.Close(closeRoomFull, "note is busy")
+		return
+	}
 	defer h.leave(id, p)
 	go h.writer(ctx, cancel, p)
 	go h.pinger(ctx, cancel, conn)
@@ -115,6 +123,7 @@ func (h *Hub) serve(ctx context.Context, cancel context.CancelFunc, conn *websoc
 		h.fail(conn, "catch-up", err)
 		return
 	}
+	h.broadcast(id, p, hereMsg{T: "here", N: here}) // the newcomer got the count in its welcome
 
 	for {
 		var m inMsg
@@ -135,6 +144,23 @@ func (h *Hub) serve(ctx context.Context, cancel context.CancelFunc, conn *websoc
 			}
 			h.reply(ctx, p, ackMsg{T: "ack", Cid: m.Cid, Seq: op.Seq})
 			h.broadcast(id, p, opMsg{T: "op", Seq: op.Seq, Ct: m.Ct, IV: m.IV})
+		case "presence":
+			// Ephemeral: relayed to the others, never stored (the server can't read it anyway).
+			if _, _, ok := decodeSealed(m.Ct, m.IV, maxPresenceBytes); !ok {
+				conn.Close(closeBadMessage, "bad presence message")
+				return
+			}
+			h.broadcast(id, p, presenceMsg{T: "presence", From: p.id, Ct: m.Ct, IV: m.IV})
+		case "snapshot":
+			ct, iv, ok := decodeSealed(m.Ct, m.IV, h.opts.MaxSnapshotBytes)
+			if !ok || m.UpTo < 1 {
+				conn.Close(closeBadMessage, "bad snapshot message")
+				return
+			}
+			if _, err := h.log.PutSnapshot(ctx, id, m.UpTo, ct, iv); err != nil { // a rejected (stale) snapshot is fine
+				h.fail(conn, "snapshot", err)
+				return
+			}
 		case "ping":
 			h.reply(ctx, p, pongMsg{T: "pong"})
 		default:
@@ -246,14 +272,16 @@ func (h *Hub) reply(ctx context.Context, p *peer, v any) {
 
 // broadcast sends to every peer in the room except `from`, never waiting on anyone.
 func (h *Hub) broadcast(id string, from *peer, v any) {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return
-	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	r := h.rooms[id]
-	if r == nil {
+	if r := h.rooms[id]; r != nil {
+		h.broadcastLocked(r, from, v)
+	}
+}
+
+func (h *Hub) broadcastLocked(r *room, from *peer, v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
 		return
 	}
 	for p := range r.peers {
@@ -263,12 +291,16 @@ func (h *Hub) broadcast(id string, from *peer, v any) {
 		select {
 		case p.bcast <- b:
 		default:
-			// Its queue is full: it can't keep up. Task 9 drops it here.
+			// Back-pressure: its queue is full, so it can't keep up. Drop it rather than stall the
+			// room; it reconnects and catches up from its `have`. Close waits for the handshake,
+			// so it runs off the lock.
+			p.kick.Do(func() { go p.conn.Close(closeTooSlow, "too slow") })
 		}
 	}
 }
 
-func (h *Hub) join(id string, p *peer) int {
+// join adds p to the note's room, or reports false if the room is full.
+func (h *Hub) join(id string, p *peer) (int, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	r := h.rooms[id]
@@ -276,10 +308,13 @@ func (h *Hub) join(id string, p *peer) int {
 		r = &room{peers: make(map[*peer]struct{})}
 		h.rooms[id] = r
 	}
+	if len(r.peers) >= h.opts.MaxPeers {
+		return 0, false
+	}
 	r.nextID++
 	p.id = r.nextID
 	r.peers[p] = struct{}{}
-	return len(r.peers)
+	return len(r.peers), true
 }
 
 func (h *Hub) leave(id string, p *peer) {
@@ -292,7 +327,10 @@ func (h *Hub) leave(id string, p *peer) {
 	delete(r.peers, p)
 	if len(r.peers) == 0 {
 		delete(h.rooms, id)
+		return
 	}
+	h.broadcastLocked(r, nil, leftMsg{T: "left", From: p.id})
+	h.broadcastLocked(r, nil, hereMsg{T: "here", N: len(r.peers)})
 }
 
 func (h *Hub) fail(conn *websocket.Conn, what string, err error) {

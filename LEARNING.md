@@ -297,3 +297,13 @@ One entry per concept, written for future-me coming back after a long break.
 ## Unwrap and hijacking
 - Middleware wraps http.ResponseWriter. The WebSocket library finds the real connection by calling `Unwrap()` repeatedly.
   Without `statusRecorder.Unwrap()` every upgrade through our logger fails (mutation-verified).
+
+## Back-pressure: drop the slow consumer
+- One peer that can't keep up must never stall the room. Each peer has a bounded broadcast queue; a full queue means
+  "close this one connection" (4008), never "wait". It reconnects and catches up from its `have` — nothing lost.
+- `sync.Once` makes "close this peer" happen once even if many broadcasts find it full at the same time.
+
+## Ephemeral vs durable messages
+- Durable: edit batches → appended to the op log, replayed forever.
+- Ephemeral: cursor positions → relayed to whoever is in the room right now, never stored.
+- The viewer count is the one fact the server knows anyway (it counts connections), so it is sent in plaintext.

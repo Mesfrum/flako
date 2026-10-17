@@ -14,6 +14,7 @@ import (
 
 	"github.com/Mesfrum/flako/server/internal/config"
 	"github.com/Mesfrum/flako/server/internal/httpapi"
+	"github.com/Mesfrum/flako/server/internal/live"
 	"github.com/Mesfrum/flako/server/internal/store"
 	"github.com/Mesfrum/flako/server/internal/web"
 )
@@ -76,9 +77,16 @@ func run() error {
 }
 
 // newMux wires the API and the embedded client onto one router.
-func newMux(st store.Store, logger *slog.Logger) *http.ServeMux {
+// liveStore is what newMux needs: Phase 1 notes (legacy GET) plus the live op log.
+type liveStore interface {
+	store.Store
+	store.OpLog
+}
+
+func newMux(st liveStore, logger *slog.Logger) *http.ServeMux {
 	mux := http.NewServeMux()
 	httpapi.New(st, logger).Routes(mux)
+	mux.Handle("GET /api/notes/{id}/live", live.NewHub(st, logger, live.DefaultOptions()))
 	// No method in the pattern: "GET /" would conflict with "/api/" (narrower method,
 	// broader path — neither wins). The SPA handler rejects non-GET/HEAD itself.
 	mux.Handle("/", web.Handler()) // everything that isn't /api or /healthz

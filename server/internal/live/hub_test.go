@@ -76,8 +76,19 @@ func send(t *testing.T, c *websocket.Conn, v any) {
 	}
 }
 
-// recv reads one message as a generic map (field names exactly as on the wire).
+// recv reads the next message, skipping viewer-count chatter ("here"/"left") that most tests ignore.
 func recv(t *testing.T, c *websocket.Conn) map[string]any {
+	t.Helper()
+	for {
+		m := recvRaw(t, c)
+		if m["t"] != "here" && m["t"] != "left" {
+			return m
+		}
+	}
+}
+
+// recvRaw reads one message as a generic map (field names exactly as on the wire).
+func recvRaw(t *testing.T, c *websocket.Conn) map[string]any {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -309,5 +320,105 @@ func TestConnectionOutlivesServerTimeouts(t *testing.T) {
 	send(t, c, map[string]any{"t": "ops", "cid": "late", "ct": goodCT, "iv": goodIV})
 	if ack := recv(t, c); ack["t"] != "ack" {
 		t.Fatalf("ops after the timeout window: %v", ack)
+	}
+}
+
+func TestPresenceRelayedNotStored(t *testing.T) {
+	base, log := newTestServer(t, testOptions())
+	a, b := dial(t, base), dial(t, base)
+	join(t, a, 0)
+	join(t, b, 0)
+	send(t, a, map[string]any{"t": "presence", "ct": goodCT, "iv": goodIV})
+	m := recv(t, b)
+	if m["t"] != "presence" || m["ct"] != goodCT || m["iv"] != goodIV || m["from"] != 1.0 {
+		t.Fatalf("presence = %v, want from 1 (A)", m)
+	}
+	if seq, _ := log.LatestSeq(context.Background(), noteID); seq != 0 {
+		t.Errorf("presence was stored: LatestSeq = %d", seq)
+	}
+}
+
+func TestPresenceTooBigIsRejected(t *testing.T) {
+	base, _ := newTestServer(t, testOptions())
+	c := dial(t, base)
+	join(t, c, 0)
+	send(t, c, map[string]any{"t": "presence", "ct": base64.StdEncoding.EncodeToString(make([]byte, 4097)), "iv": goodIV})
+	if code := closeCode(t, c); code != 4400 {
+		t.Fatalf("close code = %d, want 4400", code)
+	}
+}
+
+func TestHereCountsJoinAndLeave(t *testing.T) {
+	base, _ := newTestServer(t, testOptions())
+	a := dial(t, base)
+	if w, _ := join(t, a, 0); w["here"] != 1.0 {
+		t.Fatalf("welcome.here = %v, want 1", w["here"])
+	}
+	b := dial(t, base)
+	if w, _ := join(t, b, 0); w["here"] != 2.0 {
+		t.Fatalf("B welcome.here = %v, want 2", w["here"])
+	}
+	if m := recvRaw(t, a); m["t"] != "here" || m["n"] != 2.0 {
+		t.Fatalf("A got %v, want here 2", m)
+	}
+	b.Close(websocket.StatusNormalClosure, "")
+	if m := recvRaw(t, a); m["t"] != "left" || m["from"] != 2.0 {
+		t.Fatalf("A got %v, want left from 2", m)
+	}
+	if m := recvRaw(t, a); m["t"] != "here" || m["n"] != 1.0 {
+		t.Fatalf("A got %v, want here 1", m)
+	}
+}
+
+func TestRoomFull(t *testing.T) {
+	opts := testOptions()
+	opts.MaxPeers = 2
+	base, _ := newTestServer(t, opts)
+	join(t, dial(t, base), 0)
+	join(t, dial(t, base), 0)
+	third := dial(t, base)
+	send(t, third, map[string]any{"t": "hello", "have": 0})
+	if code := closeCode(t, third); code != 4001 {
+		t.Fatalf("close code = %d, want 4001", code)
+	}
+}
+
+func TestSnapshotStored(t *testing.T) {
+	base, log := newTestServer(t, testOptions())
+	c := dial(t, base)
+	join(t, c, 0)
+	for i := 0; i < 3; i++ {
+		send(t, c, map[string]any{"t": "ops", "cid": "c", "ct": goodCT, "iv": goodIV})
+		expectType(t, recv(t, c), "ack")
+	}
+	send(t, c, map[string]any{"t": "snapshot", "upTo": 3, "ct": goodCT, "iv": goodIV})
+	send(t, c, map[string]any{"t": "ping"}) // the server handles messages in order: pong ⇒ snapshot done
+	expectType(t, recv(t, c), "pong")
+	snap, err := log.LatestSnapshot(context.Background(), noteID)
+	if err != nil || snap.UpToSeq != 3 {
+		t.Fatalf("LatestSnapshot = %+v, %v; want upTo 3", snap, err)
+	}
+}
+
+func TestSlowClientDropped(t *testing.T) {
+	opts := testOptions()
+	opts.SendBuffer = 2
+	opts.MaxOpBytes = 64 << 10
+	base, _ := newTestServer(t, opts)
+	a, b, slow := dial(t, base), dial(t, base), dial(t, base)
+	join(t, a, 0)
+	join(t, b, 0)
+	join(t, slow, 0) // …and then never reads again
+
+	bigCT := base64.StdEncoding.EncodeToString(make([]byte, 60<<10))
+	for i := 0; i < 50; i++ {
+		send(t, a, map[string]any{"t": "ops", "cid": "big", "ct": bigCT, "iv": goodIV})
+		expectType(t, recv(t, a), "ack") // A keeps being served
+		if m := recv(t, b); m["t"] != "op" {
+			t.Fatalf("B got %v, want op", m)
+		}
+	}
+	if code := closeCode(t, slow); code != 4008 {
+		t.Fatalf("slow client close code = %d, want 4008", code)
 	}
 }

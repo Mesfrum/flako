@@ -28,6 +28,13 @@ func TestNewMuxRoutesAPIAndSPA(t *testing.T) {
 			t.Errorf("%s /api/nope = %d %q, want JSON 404", method, rec.Code, rec.Header().Get("Content-Type"))
 		}
 	}
+	live := "/api/notes/" + strings.Repeat("a", 43) + "/live"
+	if rec := do("GET", live); rec.Code == http.StatusNotFound {
+		t.Errorf("GET %s = 404, want the live hub (it rejects a non-upgrade request)", live)
+	}
+	if rec := do("PUT", "/api/notes/"+strings.Repeat("a", 43)); rec.Code != http.StatusGone {
+		t.Errorf("PUT note = %d, want 410", rec.Code)
+	}
 	if rec := do("GET", "/healthz"); rec.Body.String() != "ok" {
 		t.Errorf("GET /healthz = %q, want ok", rec.Body)
 	}
