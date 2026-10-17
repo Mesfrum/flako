@@ -1,6 +1,6 @@
 # Phase 2 — Live Collaboration Design
 
-**Status:** draft for review · **Date:** 2026-10-17 · **Builds on:** `2026-10-16-phase1-foundation-design.md`
+**Status:** draft — awaiting owner review · **Date:** 2026-10-17 · **Builds on:** `2026-10-16-phase1-foundation-design.md`
 
 ## 1. Intent
 
@@ -44,6 +44,7 @@ alone. "Laggy is unacceptable. Smoothness and feel is needed."
 
 - Typing feels laggy, stutters, or drops keystrokes, alone or together.
 - The local caret jumps when someone else edits.
+- Undo (Ctrl+Z) does nothing, or undoes someone else's typing.
 - The server can read note text or cursor positions, or learns note names.
 - Anything someone typed is silently lost (online, offline, reconnecting, closing the tab).
 - Using a note alone gets worse than Phase 1.
@@ -59,6 +60,9 @@ alone. "Laggy is unacceptable. Smoothness and feel is needed."
 - localStorage may hold ciphertext only.
 - Teaching: each task opens with a Concept note; `LEARNING.md` gains an entry per concept.
 - Owner works on Windows; Go 1.24; the deploy is built from `master`.
+- **Shipping (owner's decision):** one cutover. All Phase 2 work stays on the `phase2-live` branch
+  until it is finished and tested, then merges to `master` in one go. The deployed Phase 1 version is
+  archived on the `archive/phase1` branch (`4517ea6`).
 
 ## 6. Decided design
 
@@ -88,7 +92,11 @@ alone. "Laggy is unacceptable. Smoothness and feel is needed."
   into small batches (target ~50 ms, decided by the builder), encrypted, and sent.
 - **Envelope:** each batch is encrypted with the note key (AES-GCM, fresh IV, AAD = note id plus a
   message-kind label, so a cursor message can't be replayed as an edit). The plaintext is a
-  versioned JSON (or compact) payload; the exact encoding is left to the builder.
+  versioned payload; the exact encoding is left to the builder, but it must be compact (no
+  per-character JSON objects; see §6.8). *(Builder's call recorded by the designer.)* Every edit batch
+  also carries, inside the encryption, the client's timestamp and the sender's per-visit replica id
+  and colour, so Phase 3 can show "when" and "which (anonymous) visitor" without changing the
+  stored format later.
 - **Presence** (cursor position + colour) is encrypted the same way, sent separately, relayed but
   **never stored**.
   - A cursor position is an element id (plus a selection end, if there is one), not an index, so
@@ -109,8 +117,8 @@ alone. "Laggy is unacceptable. Smoothness and feel is needed."
   - `ops (note_id, seq, ciphertext, iv, created_at)`, primary key `(note_id, seq)`. The server
     assigns `seq` = 1, 2, 3… per note, inside a transaction, in arrival order. That order is the
     log. Correctness doesn't depend on it, because the CRDT converges in any order.
-  - `snapshots (note_id, up_to_seq, ciphertext, iv, created_at)`, keeping at least the latest per
-    note.
+  - `snapshots (note_id, up_to_seq, ciphertext, iv, created_at)`. All snapshots are kept (they are
+    small, and Phase 3 rewind can start from the nearest one). *(Designer's call.)*
   - Ops are never deleted after a snapshot. They are Phase 3's history.
 - **Snapshots are made by clients**, because the server can't read content.
   - When a connected client sees that more than ~500 ops have arrived since the latest snapshot,
@@ -124,8 +132,8 @@ alone. "Laggy is unacceptable. Smoothness and feel is needed."
      viewer count.
   3. After that, every op is broadcast with its `seq`.
   4. The sender gets an ack for its own batch so it can clear its outbox.
-- **Limits:** 20 connections per note; max frame ~256 KiB for op batches and ~4 MiB for
-  snapshots. A whole note's text must still fit the spirit of the Phase 1 1 MiB limit. A ping or
+- **Limits:** 20 connections per note; max frame ~256 KiB for op batches and ~8 MiB for
+  snapshots. See §6.8 for the note size limit. A ping or
   keepalive roughly every 30 s means idle connections behind Caddy and the Oracle network
   survive.
 - **Server timeouts:** today's `http.Server` `ReadTimeout`/`WriteTimeout` (15 s) must not kill
@@ -155,6 +163,11 @@ alone. "Laggy is unacceptable. Smoothness and feel is needed."
   state. It uses a **fixed, reserved import replica id with counters 1…n**. Two clients importing
   at the same moment therefore produce *identical* element ids, and idempotence de-duplicates
   them instead of doubling the text.
+- **Unsent Phase 1 text** *(designer's call)*: a Phase 1 tab that was open during the deploy will
+  have its next save refused and keep its text in `pending:<id>`. When Phase 2 imports that note, if
+  a `pending:<id>` entry exists and decrypts, the client diffs the imported text against it and
+  applies the difference as ordinary local edits on top of the import, then deletes the entry. The
+  text the user typed arrives, merged with everyone else's, never overwriting it.
 - After that, the legacy blob is read-only: `PUT /api/notes/{id}` returns **410 Gone**, so a
   stale Phase 1 client can't fork the note. `GET` stays, for importing.
 
@@ -173,6 +186,36 @@ alone. "Laggy is unacceptable. Smoothness and feel is needed."
   and keys must be bit-for-bit identical; the Phase 1 known-answer tests still pass.
 - A small, quiet connection indicator replaces Phase 1's save status (e.g. "live · 3 here",
   "offline — will sync"). The Phase 1 minimal UI stays; the owner likes it.
+
+### 6.7 Undo and redo: my edits only (owner's decision)
+
+- Ctrl/Cmd+Z undoes **my own** most recent edits and never anyone else's, even while others are
+  typing. Ctrl/Cmd+Shift+Z and Ctrl+Y redo. The browser's built-in textarea undo is intercepted and
+  replaced, because remote edits make it unreliable.
+- **Undoing an insert** deletes the characters I inserted (by element id).
+- **Undoing a delete** brings back the exact characters I deleted, at their original position, by
+  reviving those element ids. This needs an "undelete" operation in the CRDT, which must keep the
+  convergence and idempotence properties.
+  - If someone else also deleted the same characters, my undo still revives them.
+  - Characters someone else typed are never affected by my undo or redo.
+- Keystrokes are grouped into undo steps the way editors usually do it (a burst of typing or one
+  paste = one step). The exact grouping rule is left to the builder.
+- The caret moves to where the undone or redone change happened.
+- **Tests:** undo and redo with no collaborators matches single-user expectations; undo while a
+  collaborator types elsewhere and in the same line never touches their text; undo and redo
+  converge across replicas.
+
+### 6.8 Note size *(designer's call)*
+
+- The limit is on **visible text: 1 MiB**, as in Phase 1. It is checked locally before applying an
+  insert. An insert or paste that would exceed it is refused, with a quiet notice ("note is full").
+  Deleting always works. Nothing already typed is ever dropped, because the refusal happens before
+  the edit exists.
+- The CRDT encoding must be compact enough that a 1 MiB note with a long edit history (tombstones
+  included) still fits the 8 MiB snapshot frame. If a snapshot ever would not fit, the client skips
+  snapshotting. Joining then replays more ops: slower, still correct. This is documented as a known
+  limit until tombstone GC exists.
+- A large paste or a 1 MiB legacy import is split into op batches under the 256 KiB frame limit.
 
 ## 7. Security and privacy
 
@@ -212,6 +255,8 @@ alone. "Laggy is unacceptable. Smoothness and feel is needed."
 ## 9. Teaching
 
 Concepts to cover as they come up:
+
+- Undo in collaborative editors (selective undo; inverse ops; why the browser's undo breaks).
 
 - CRDTs and convergence; RGA; Lamport clocks; idempotence and commutativity.
 - WebSockets vs HTTP.
