@@ -327,3 +327,18 @@ One entry per concept, written for future-me coming back after a long break.
 ## Testing: wait for the thing you assert on
 - A flaky test waited for "unsent > 0" (true instantly) and then read the outbox (filled after async encryption).
   Fix: wait for the outbox entry itself. Run new async tests 10–20× before trusting them.
+
+## Presence and throttling
+- A cursor is sent as anchors ("just after id X") so it stays on the right characters on the other screen as text shifts.
+- Throttle: send at most once per 50 ms; later moves inside the window collapse into one trailing send.
+- Re-send when someone new joins, so they see you without waiting for you to move.
+
+## Consistent snapshots
+- Only snapshot a state everyone already has: nothing queued, sealing or unacked of mine, and no gaps in what I received.
+- Otherwise a joiner could start from text that existing peers never got (and maybe never will, if I crash).
+- Lesson from the tests: the first version of this test passed for the wrong reason (a gap stopped `have`), so a
+  mutation didn't fail it. Rewritten so the rule itself is what's exercised: my edit waits in the batch while others' ops arrive.
+
+## IME composition
+- Phone keyboards and CJK input build a word in a "composing" state; changing the text underneath breaks it.
+- While composing, remote ops are held (still counted as received) and applied the moment composition ends.

@@ -228,3 +228,151 @@ describe("LiveNote sync core", () => {
     expect(hub.log.length).toBe(1);
   });
 });
+
+describe("LiveNote presence, undo, limits, snapshots, IME", () => {
+  it("my cursor appears for the friend and follows edits", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub);
+    const b = engine(hub);
+    await ready(a);
+    await ready(b);
+    type(a, "hello world");
+    await advance(50);
+    await until(() => b.getSnapshot().text === "hello world", "synced");
+    a.select(2, 4);
+    await advance(50);
+    await until(() => b.getSnapshot().cursors.some((c) => c.start === 2 && c.end === 4), "B sees A's selection");
+    expect(b.getSnapshot().cursors).toHaveLength(1);
+    expect(a.getSnapshot().cursors).toHaveLength(1); // only B's cursor: my own is never shown to me
+    type(b, "X" + b.getSnapshot().text, 1); // B inserts before A's selection
+    await until(() => {
+      const c = b.getSnapshot().cursors[0];
+      return c !== undefined && c.start === 3 && c.end === 5;
+    }, "A's cursor shifted on B's screen");
+  });
+
+  it("a leaving friend's cursor disappears; here updates", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub);
+    const b = engine(hub);
+    await ready(a);
+    await ready(b);
+    await until(() => a.getSnapshot().here === 2, "two here");
+    b.select(0, 0);
+    await advance(50);
+    await until(() => a.getSnapshot().cursors.length === 1, "B's cursor shown");
+    b.dispose();
+    await until(() => a.getSnapshot().cursors.length === 0 && a.getSnapshot().here === 1, "B gone");
+  });
+
+  it("undo removes only my text while the friend types in the same line", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub);
+    const b = engine(hub);
+    await ready(a);
+    await ready(b);
+    type(a, "mine ");
+    await advance(50);
+    await until(() => b.getSnapshot().text === "mine ", "mine shared");
+    type(b, "mine theirs");
+    await advance(50);
+    await until(() => a.getSnapshot().text === "mine theirs", "theirs shared");
+    a.undo();
+    expect(a.getSnapshot().text).toBe("theirs");
+    expect(a.getSnapshot().selection).toEqual({ start: 0, end: 0 });
+    await advance(50);
+    await until(() => b.getSnapshot().text === "theirs", "B sees the undo");
+  });
+
+  it("redo brings it back for everyone", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub);
+    const b = engine(hub);
+    await ready(a);
+    await ready(b);
+    type(a, "again");
+    await advance(50);
+    a.undo();
+    await advance(50);
+    await until(() => b.getSnapshot().text === "", "undone everywhere");
+    a.redo();
+    expect(a.getSnapshot().text).toBe("again");
+    await advance(50);
+    await until(() => b.getSnapshot().text === "again", "redone everywhere");
+  });
+
+  it("a paste past the limit is refused and flagged full; deleting clears it", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub, memoryStorage(), { maxTextBytes: 10 });
+    await ready(a);
+    type(a, "0123456789");
+    expect(a.getSnapshot().text).toBe("0123456789");
+    type(a, "0123456789X");
+    expect(a.getSnapshot().text).toBe("0123456789");
+    expect(a.getSnapshot().full).toBe(true);
+    type(a, "012345678");
+    expect(a.getSnapshot().text).toBe("012345678");
+    expect(a.getSnapshot().full).toBe(false);
+  });
+
+  it("the limit counts UTF-8 bytes, not characters", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub, memoryStorage(), { maxTextBytes: 10 });
+    await ready(a);
+    type(a, "🌮🌮🌮"); // 12 UTF-8 bytes, 6 UTF-16 units
+    expect(a.getSnapshot().full).toBe(true);
+    expect(a.getSnapshot().text).toBe("");
+  });
+
+  it("uploads a snapshot only from fully shared state", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub, memoryStorage(), { snapshotEvery: 5, batchMs: 5000 }); // A's own edit lingers unsent
+    const b = engine(hub);
+    await ready(a);
+    await ready(b);
+    type(a, "mine");
+    for (let i = 1; i <= 5; i++) {
+      type(b, "y".repeat(i));
+      await advance(50);
+    }
+    await until(() => hub.log.length === 5, "five of B's ops stored");
+    await advance(500);
+    // A has seen seqs 1..5 (threshold reached) but its own edit isn't shared yet: no snapshot.
+    expect(hub.snapshots).toHaveLength(0);
+
+    await advance(5000); // A's batch goes out and is acked as seq 6
+    await until(() => hub.snapshots.length === 1, "snapshot once everything is shared");
+    expect(hub.snapshots[0].upTo).toBe(6);
+  });
+
+  it("a snapshot made by one friend opens correctly for a newcomer", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub, memoryStorage(), { snapshotEvery: 3 });
+    await ready(a);
+    for (const t of ["a", "ab", "abc", "abcd"]) {
+      type(a, t);
+      await advance(50);
+    }
+    await until(() => hub.snapshots.length >= 1 && hub.log.length === 4, "snapshot and all four ops stored");
+    // At op 3 (or op 4, if the 4th edit was still unacked then): never from a state with unacked edits.
+    expect(hub.snapshots[0].upTo).toBeGreaterThanOrEqual(3);
+    const c = engine(hub);
+    await ready(c);
+    expect(c.getSnapshot().text).toBe("abcd");
+  });
+
+  it("remote edits wait while composing, then apply", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub);
+    const b = engine(hub);
+    await ready(a);
+    await ready(b);
+    a.setComposing(true);
+    type(b, "remote");
+    await advance(50);
+    await advance(200);
+    expect(a.getSnapshot().text).toBe("");
+    a.setComposing(false);
+    expect(a.getSnapshot().text).toBe("remote");
+  });
+});

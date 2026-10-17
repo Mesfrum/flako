@@ -3,9 +3,18 @@ import type { NoteKeys } from "../crypto/derive";
 import type { NotesApi } from "../notes/api";
 import type { PendingStore } from "../notes/pending";
 import { Rga, type Op } from "./crdt/rga";
-import { fromAnchor, spliceFromChange, toAnchor } from "./editing";
+import { UndoManager } from "./crdt/undo";
+import { fromAnchor, spliceFromChange, toAnchor, type Anchor } from "./editing";
 import type { Outbox } from "./outbox";
-import { CLOSE_ROOM_FULL, type ClientMsg, type OpsPayload, type SealedWire, type ServerMsg, type SnapshotPayload } from "./protocol";
+import {
+  CLOSE_ROOM_FULL,
+  type ClientMsg,
+  type OpsPayload,
+  type PresencePayload,
+  type SealedWire,
+  type ServerMsg,
+  type SnapshotPayload,
+} from "./protocol";
 import { seal, unseal } from "./sealed";
 
 // ---- transport (injected: the browser WebSocket in the app, FakeHub in tests) ----
@@ -70,6 +79,14 @@ const MAX_RETRY_MS = 30_000;
 /** Cursor colours; one is picked at random per visit, so a colour doesn't identify a person. */
 export const CURSOR_COLORS = ["#e4572e", "#29335c", "#f3a712", "#669bbc", "#a8c686", "#b56576", "#6d597a", "#2a9d8f"];
 
+const encoder = new TextEncoder();
+
+/** UTF-8 size, computed only when it could matter (a UTF-16 unit is at most 3 UTF-8 bytes). */
+function exceeds(text: string, maxBytes: number): boolean {
+  if (text.length * 3 <= maxBytes) return false;
+  return encoder.encode(text).length > maxBytes;
+}
+
 function randomReplica(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -117,12 +134,23 @@ export class LiveNote {
   private pingTimer: ReturnType<typeof setInterval> | undefined;
   private pongTimer: ReturnType<typeof setTimeout> | undefined;
 
+  private undoer: UndoManager;
+  private sealing = 0; // batches being sealed: in the CRDT but not yet in the outbox
+  private lastSnapshotUpTo = 0;
+  private composing = false;
+  private held: Op[] = []; // remote ops waiting for IME composition to end
+  private remote = new Map<number, { color: string; anchor: Anchor; head: Anchor }>();
+  private presenceTimer: ReturnType<typeof setTimeout> | undefined;
+  private presenceDue = false;
+  private presenceOut: Promise<void> = Promise.resolve();
+
   constructor(name: string, deps: LiveNoteDeps) {
     this.name = name;
     this.deps = deps;
     this.replica = deps.replica ?? randomReplica();
     this.color = CURSOR_COLORS[Math.floor(Math.random() * CURSOR_COLORS.length)];
     this.rga = new Rga(this.replica);
+    this.undoer = new UndoManager(this.rga, 500);
   }
 
   // Arrow properties so React can pass them around without losing `this`.
@@ -162,6 +190,8 @@ export class LiveNote {
     this.stopHeartbeat();
     clearTimeout(this.retryTimer);
     this.retryTimer = undefined;
+    clearTimeout(this.presenceTimer);
+    this.presenceTimer = undefined;
     const s = this.socket;
     this.socket = null;
     this.open = false;
@@ -171,20 +201,61 @@ export class LiveNote {
   /** The textarea now holds `next`; selection is where the browser put the caret. */
   change = (next: string, selStart: number, selEnd: number): void => {
     if (this.snapshot.status.kind !== "ready") return;
-    const splice = spliceFromChange(this.rga.text(), next, selEnd);
+    const prev = this.rga.text();
+    if (next.length > prev.length && exceeds(next, this.deps.maxTextBytes ?? 1 << 20)) {
+      // Refused before anything exists, so nothing typed is lost; the textarea snaps back.
+      this.set({ full: true, text: prev, selection: this.snapshot.selection });
+      return;
+    }
+    const splice = spliceFromChange(prev, next, selEnd);
     if (splice) {
+      const now = (this.deps.now ?? Date.now)();
       if (splice.remove > 0) {
         const op = this.rga.delete(splice.index, splice.remove);
-        if (op) this.local(op);
+        if (op) {
+          this.undoer.record(op, now);
+          this.local(op);
+        }
       }
-      if (splice.insert.length > 0) this.local(this.rga.insert(splice.index, splice.insert));
+      if (splice.insert.length > 0) {
+        const op = this.rga.insert(splice.index, splice.insert);
+        this.undoer.record(op, now);
+        this.local(op);
+      }
     }
-    this.set({ text: this.rga.text(), selection: { start: selStart, end: selEnd } });
+    this.setText({ full: false, selection: { start: selStart, end: selEnd } });
+    this.schedulePresence();
   };
 
   select = (start: number, end: number): void => {
+    const sel = this.snapshot.selection;
+    if (sel.start === start && sel.end === end) return;
+    this.undoer.breakGroup();
     this.set({ selection: { start, end } });
+    this.schedulePresence();
   };
+
+  /** Undo MY last edit step (never a collaborator's). */
+  undo = (): void => this.applyUndo(this.undoer.undo());
+
+  redo = (): void => this.applyUndo(this.undoer.redo());
+
+  /** While an IME (phone keyboard, CJK input) composes, remote edits wait so the word isn't broken. */
+  setComposing = (composing: boolean): void => {
+    this.composing = composing;
+    if (composing || this.held.length === 0) return;
+    const held = this.held;
+    this.held = [];
+    this.applyRemote(held);
+    this.maybeSnapshot();
+  };
+
+  private applyUndo(res: { ops: Op[]; caret: number } | null): void {
+    if (!res || this.snapshot.status.kind !== "ready") return;
+    for (const op of res.ops) this.local(op);
+    this.setText({ selection: { start: res.caret, end: res.caret } });
+    this.schedulePresence();
+  }
 
   /** Reconnect now instead of waiting for the backoff (e.g. the browser fired "online"). */
   retryNow = (): void => {
@@ -276,18 +347,24 @@ export class LiveNote {
     switch (m.t) {
       case "welcome":
         this.set({ here: m.here });
-        if (m.snapshot) await this.loadSnapshot(m.snapshot);
+        if (m.snapshot) {
+          await this.loadSnapshot(m.snapshot);
+          this.lastSnapshotUpTo = Math.max(this.lastSnapshotUpTo, m.snapshot.upTo);
+        }
         return;
       case "op": {
         const payload = await unseal<OpsPayload>(keys.key, keys.id, "ops", m);
-        this.applyRemote(payload.ops);
+        if (this.composing) this.held.push(...payload.ops);
+        else this.applyRemote(payload.ops);
         this.markReceived(m.seq);
+        this.maybeSnapshot();
         return;
       }
       case "ack":
         this.deps.outbox.remove(keys.id, m.cid);
         this.markReceived(m.seq);
         this.updateUnsent();
+        this.maybeSnapshot();
         return;
       case "synced":
         this.have = Math.max(this.have, m.seq);
@@ -296,17 +373,29 @@ export class LiveNote {
         this.retryDelay = FIRST_RETRY_MS;
         this.set({ status: { kind: "ready" }, conn: "live" });
         this.updateUnsent();
+        this.schedulePresence(); // let the others see where I am
+        this.maybeSnapshot();
         return;
-      case "here":
+      case "here": {
+        const grew = m.n > this.snapshot.here;
         this.set({ here: m.n });
+        if (grew) this.schedulePresence(); // newcomers see my cursor
         return;
+      }
       case "pong":
         clearTimeout(this.pongTimer);
         this.pongTimer = undefined;
         return;
-      case "presence":
+      case "presence": {
+        const p = await unseal<PresencePayload>(keys.key, keys.id, "presence", m);
+        this.remote.set(m.from, { color: p.color, anchor: p.anchor, head: p.head });
+        this.set({ cursors: this.computeCursors() });
+        return;
+      }
       case "left":
-        return; // Task 11
+        this.remote.delete(m.from);
+        this.set({ cursors: this.computeCursors() });
+        return;
     }
   }
 
@@ -329,7 +418,8 @@ export class LiveNote {
     for (const op of this.history) next.apply(op); // keep anything applied here before the snapshot arrived
     const sel = this.snapshot.selection;
     this.rga = next;
-    this.set({ text: next.text(), selection: this.clampSelection(sel) });
+    this.undoer = new UndoManager(next, 500); // undo history doesn't survive a re-base onto a snapshot
+    this.setText({ selection: this.clampSelection(sel) });
   }
 
   /** Our own unacked batches (this tab's, or a previous tab's in the same browser) must show here too. */
@@ -367,9 +457,66 @@ export class LiveNote {
       if (this.rga.apply(op)) changed = true;
     }
     if (!changed) return;
-    this.set({
-      text: this.rga.text(),
-      selection: { start: fromAnchor(this.rga, startAnchor), end: fromAnchor(this.rga, endAnchor) },
+    this.setText({ selection: { start: fromAnchor(this.rga, startAnchor), end: fromAnchor(this.rga, endAnchor) } });
+  }
+
+  /** Remote cursors as indices, recomputed whenever the text changes. Unknown anchors wait. */
+  private computeCursors(): LiveSnapshot["cursors"] {
+    const out: LiveSnapshot["cursors"] = [];
+    for (const [from, p] of this.remote) {
+      try {
+        out.push({ from, color: p.color, start: fromAnchor(this.rga, p.anchor), end: fromAnchor(this.rga, p.head) });
+      } catch {
+        // Anchored on a character we haven't received yet; it shows up once that op arrives.
+      }
+    }
+    return out;
+  }
+
+  private schedulePresence(): void {
+    if (this.presenceTimer !== undefined) {
+      this.presenceDue = true;
+      return;
+    }
+    this.sendPresence();
+    this.presenceTimer = setTimeout(() => {
+      this.presenceTimer = undefined;
+      if (this.presenceDue) {
+        this.presenceDue = false;
+        this.schedulePresence();
+      }
+    }, this.deps.presenceMs ?? 50);
+  }
+
+  private sendPresence(): void {
+    const keys = this.keys;
+    if (!keys || !this.open || this.snapshot.status.kind !== "ready") return;
+    const sel = this.clampSelection(this.snapshot.selection);
+    const payload: PresencePayload = {
+      v: 1,
+      r: this.replica,
+      color: this.color,
+      anchor: toAnchor(this.rga, sel.start),
+      head: toAnchor(this.rga, sel.end),
+    };
+    this.presenceOut = this.presenceOut.then(async () => {
+      const sealed = await seal(keys.key, keys.id, "presence", payload);
+      if (this.open && !this.disposed) this.send({ t: "presence", ...sealed });
+    });
+  }
+
+  /** Upload a snapshot, but only of state everyone already has (nothing of mine unacked, no gaps). */
+  private maybeSnapshot(): void {
+    const keys = this.keys;
+    if (!keys || !this.open || this.composing || this.held.length > 0) return;
+    if (this.have - this.lastSnapshotUpTo < (this.deps.snapshotEvery ?? 500)) return;
+    if (this.queued.length > 0 || this.sealing > 0 || this.above.size > 0) return;
+    if (this.deps.outbox.list(keys.id).length > 0 || this.rga.pendingCount() > 0) return;
+    const upTo = this.have;
+    const payload: SnapshotPayload = { v: 1, state: this.rga.toState() };
+    this.lastSnapshotUpTo = upTo;
+    void seal(keys.key, keys.id, "snapshot", payload).then((sealed) => {
+      if (this.open && !this.disposed) this.send({ t: "snapshot", upTo, ...sealed });
     });
   }
 
@@ -398,11 +545,13 @@ export class LiveNote {
     if (!keys || this.queued.length === 0) return this.outgoing;
     const ops = this.queued;
     this.queued = [];
+    this.sealing++;
     this.outgoing = this.outgoing.then(async () => {
       const payload: OpsPayload = { v: 1, at: (this.deps.now ?? Date.now)(), r: this.replica, color: this.color, ops };
       const sealed = await seal(keys.key, keys.id, "ops", payload);
       const cid = `${this.replica}-${++this.cidCounter}`;
       this.deps.outbox.add(keys.id, { cid, ...sealed }); // persisted before sending, even after dispose
+      this.sealing--;
       if (this.socket && this.open && !this.disposed) this.send({ t: "ops", cid, ...sealed });
       this.updateUnsent();
     });
@@ -413,6 +562,11 @@ export class LiveNote {
     if (!this.keys) return;
     const unsent = this.deps.outbox.list(this.keys.id).length + (this.queued.length > 0 ? 1 : 0);
     if (unsent !== this.snapshot.unsent) this.set({ unsent });
+  }
+
+  /** Publishes the CRDT's text, with cursors recomputed against it. */
+  private setText(patch: Partial<LiveSnapshot>): void {
+    this.set({ ...patch, text: this.rga.text(), cursors: this.computeCursors() });
   }
 
   private set(patch: Partial<LiveSnapshot>): void {
