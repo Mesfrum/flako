@@ -342,3 +342,9 @@ One entry per concept, written for future-me coming back after a long break.
 ## IME composition
 - Phone keyboards and CJK input build a word in a "composing" state; changing the text underneath breaks it.
 - While composing, remote ops are held (still counted as received) and applied the moment composition ends.
+
+## Deterministic ids for idempotent migrations
+- Importing a Phase 1 note uses a reserved replica id and counter = index + 1, so two people importing at once
+  produce byte-identical ops and the CRDT keeps one copy (mutation-verified: random ids → "legacy textlegacy text").
+- The same ids pin "old character 6" forever, so unsent Phase 1 text can be merged precisely after later edits.
+- Big pastes/imports are split into pieces of ≤ 16 Ki units and batches of ≤ 192 KiB JSON, under the 256 KiB frame limit.

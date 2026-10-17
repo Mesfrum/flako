@@ -1,4 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { encryptNote } from "../crypto/cipher";
+import { fromBase64 } from "../crypto/encoding";
+import type { RemoteNote } from "../notes/api";
 import { createPendingStore, memoryStorage, type KeyValueStorage } from "../notes/pending";
 import { LiveNote, type LiveNoteDeps } from "./liveNote";
 import { createOutbox } from "./outbox";
@@ -375,5 +378,80 @@ describe("LiveNote presence, undo, limits, snapshots, IME", () => {
     expect(a.getSnapshot().text).toBe(""); // …where it is held while composing
     a.setComposing(false);
     await until(() => a.getSnapshot().text === "remote", "applied when composition ends");
+  });
+});
+
+describe("LiveNote: Phase 1 notes and large edits", () => {
+  const legacy = async (text: string): Promise<RemoteNote> => ({
+    ...(await encryptNote(key, ID, text)),
+    version: 1,
+    updatedAt: 1,
+  });
+
+  it("opening a Phase 1 note imports it once even with two simultaneous openers", async () => {
+    const hub = new FakeHub();
+    const blob = await legacy("legacy text");
+    const getNote = async () => blob;
+    const a = engine(hub, memoryStorage(), { api: { getNote } });
+    const b = engine(hub, memoryStorage(), { api: { getNote } });
+    void a.start();
+    void b.start();
+    await until(() => a.getSnapshot().status.kind === "ready" && b.getSnapshot().status.kind === "ready", "both ready");
+    await advance(200);
+    await until(() => hub.log.length >= 1, "import sent");
+    await until(() => a.getSnapshot().unsent === 0 && b.getSnapshot().unsent === 0, "both imports acked");
+    expect(a.getSnapshot().text).toBe("legacy text");
+    expect(b.getSnapshot().text).toBe("legacy text");
+    const c = engine(hub); // a newcomer replays whatever both importers sent
+    await ready(c);
+    expect(c.getSnapshot().text).toBe("legacy text");
+  });
+
+  it("unsent Phase 1 text in pending:<id> is merged and the entry removed", async () => {
+    const hub = new FakeHub();
+    const storage = memoryStorage();
+    const pending = createPendingStore(storage);
+    pending.save(ID, { encrypted: await encryptNote(key, ID, "legacy text plus mine"), baseVersion: 1 });
+    const blob = await legacy("legacy text");
+    const a = engine(hub, storage, { api: { getNote: async () => blob } });
+    await ready(a);
+    await until(() => a.getSnapshot().text === "legacy text plus mine", "merged");
+    expect(pending.load(ID)).toBeNull();
+    await advance(200);
+    await until(() => a.getSnapshot().unsent === 0, "A's import and merge acked by the hub");
+    const b = engine(hub);
+    await ready(b);
+    expect(b.getSnapshot().text).toBe("legacy text plus mine");
+  });
+
+  it("an unreadable legacy blob makes the note unreadable", async () => {
+    const hub = new FakeHub();
+    const garbage: RemoteNote = { ciphertext: new Uint8Array(40), iv: new Uint8Array(12), version: 1, updatedAt: 1 };
+    const a = engine(hub, memoryStorage(), { api: { getNote: async () => garbage } });
+    void a.start();
+    await until(() => a.getSnapshot().status.kind === "unreadable", "unreadable");
+  });
+
+  it("a large paste is split into frames under the server limit", async () => {
+    const hub = new FakeHub();
+    const storage = memoryStorage();
+    const a = engine(hub, storage);
+    const b = engine(hub);
+    await ready(a);
+    await ready(b);
+    hub.online = false;
+    hub.dropAll(); // keep the batches in the outbox so we can inspect them
+    await until(() => a.getSnapshot().conn === "offline", "offline");
+    const paste = "p".repeat(300_000) + "🌮".repeat(50_000);
+    type(a, paste);
+    await advance(50);
+    await until(() => a.getSnapshot().unsent >= 2 && createOutbox(storage).list(ID).length >= 2, "split into batches");
+    for (const item of createOutbox(storage).list(ID)) {
+      expect(fromBase64(item.ct).length).toBeLessThanOrEqual(256 << 10);
+    }
+    hub.online = true;
+    a.retryNow();
+    b.retryNow();
+    await until(() => b.getSnapshot().text === paste, "friend has the whole paste");
   });
 });

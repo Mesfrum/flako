@@ -1,10 +1,11 @@
-import { DecryptError } from "../crypto/cipher";
+import { DecryptError, decryptNote } from "../crypto/cipher";
 import type { NoteKeys } from "../crypto/derive";
 import type { NotesApi } from "../notes/api";
 import type { PendingStore } from "../notes/pending";
 import { Rga, type Op } from "./crdt/rga";
 import { UndoManager } from "./crdt/undo";
 import { fromAnchor, spliceFromChange, toAnchor, type Anchor } from "./editing";
+import { importOps, legacySpliceOps } from "./importLegacy";
 import type { Outbox } from "./outbox";
 import {
   CLOSE_ROOM_FULL,
@@ -81,6 +82,53 @@ export const CURSOR_COLORS = ["#e4572e", "#29335c", "#f3a712", "#669bbc", "#a8c6
 
 const encoder = new TextEncoder();
 
+// Server frame limit is 256 KiB of ciphertext per batch. An insert piece is at most 16 Ki UTF-16
+// units (≤ 96 KiB of JSON even if every char is \u-escaped) and a batch at most 192 KiB of JSON.
+const MAX_INSERT_UNITS = 16_384;
+const MAX_BATCH_BYTES = 192 << 10;
+const isHigh = (code: number) => code >= 0xd800 && code <= 0xdbff;
+
+/** Splits big inserts into consecutive pieces (ordinary RGA inserts, so they converge the same). */
+function splitLargeInserts(ops: Op[]): Op[] {
+  const out: Op[] = [];
+  for (const op of ops) {
+    if (op.k !== "ins" || op.text.length <= MAX_INSERT_UNITS) {
+      out.push(op);
+      continue;
+    }
+    let start = 0;
+    let after = op.after;
+    while (start < op.text.length) {
+      let end = Math.min(start + MAX_INSERT_UNITS, op.text.length);
+      if (end < op.text.length && isHigh(op.text.charCodeAt(end - 1))) end--;
+      const id = { c: op.id.c + start, r: op.id.r };
+      out.push({ k: "ins", id, after, text: op.text.slice(start, end) });
+      after = { c: op.id.c + end - 1, r: op.id.r };
+      start = end;
+    }
+  }
+  return out;
+}
+
+/** Groups ops into batches whose JSON stays under MAX_BATCH_BYTES. */
+function intoBatches(ops: Op[]): Op[][] {
+  const batches: Op[][] = [];
+  let current: Op[] = [];
+  let size = 0;
+  for (const op of splitLargeInserts(ops)) {
+    const bytes = encoder.encode(JSON.stringify(op)).length;
+    if (current.length > 0 && size + bytes > MAX_BATCH_BYTES) {
+      batches.push(current);
+      current = [];
+      size = 0;
+    }
+    current.push(op);
+    size += bytes;
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
+}
+
 /** UTF-8 size, computed only when it could matter (a UTF-16 unit is at most 3 UTF-8 bytes). */
 function exceeds(text: string, maxBytes: number): boolean {
   if (text.length * 3 <= maxBytes) return false;
@@ -143,6 +191,8 @@ export class LiveNote {
   private presenceTimer: ReturnType<typeof setTimeout> | undefined;
   private presenceDue = false;
   private presenceOut: Promise<void> = Promise.resolve();
+  private legacyChecked = false; // Phase 1 import / unsent-text merge happens once per session
+  private welcomeHadSnapshot = false;
 
   constructor(name: string, deps: LiveNoteDeps) {
     this.name = name;
@@ -347,6 +397,7 @@ export class LiveNote {
     switch (m.t) {
       case "welcome":
         this.set({ here: m.here });
+        this.welcomeHadSnapshot = m.snapshot !== null;
         if (m.snapshot) {
           await this.loadSnapshot(m.snapshot);
           this.lastSnapshotUpTo = Math.max(this.lastSnapshotUpTo, m.snapshot.upTo);
@@ -370,6 +421,10 @@ export class LiveNote {
         this.have = Math.max(this.have, m.seq);
         this.absorb();
         await this.replayOutbox();
+        if (!this.legacyChecked) {
+          this.legacyChecked = true;
+          await this.importLegacy(m.seq);
+        }
         this.retryDelay = FIRST_RETRY_MS;
         this.set({ status: { kind: "ready" }, conn: "live" });
         this.updateUnsent();
@@ -420,6 +475,46 @@ export class LiveNote {
     this.rga = next;
     this.undoer = new UndoManager(next, 500); // undo history doesn't survive a re-base onto a snapshot
     this.setText({ selection: this.clampSelection(sel) });
+  }
+
+  /**
+   * Phase 1 → live: an empty live note with a legacy blob is imported with deterministic ids (two
+   * simultaneous importers produce identical ops). Text a Phase 1 tab typed but never saved
+   * (pending:<id>) is merged on top, by import ids, then the entry is removed.
+   */
+  private async importLegacy(seq: number): Promise<void> {
+    const keys = this.keys!;
+    const pending = this.deps.legacyPending.load(keys.id);
+    const needImport = seq === 0 && !this.welcomeHadSnapshot && this.rga.length === 0 && this.history.length === 0;
+    if (!needImport && !pending) return;
+
+    let remote;
+    try {
+      remote = await this.deps.api.getNote(keys.id);
+    } catch {
+      this.legacyChecked = false; // offline / server hiccup: try again on the next sync
+      return;
+    }
+    // An undecryptable legacy blob throws DecryptError → the note is shown as unreadable.
+    const legacyText = remote ? await decryptNote(keys.key, keys.id, remote) : "";
+
+    if (needImport) {
+      for (const op of importOps(legacyText)) {
+        this.rga.apply(op);
+        this.local(op);
+      }
+    }
+    if (pending) {
+      try {
+        const pendingText = await decryptNote(keys.key, keys.id, pending.encrypted);
+        for (const op of legacySpliceOps(legacyText, pendingText, this.rga)) this.local(op);
+      } catch (err) {
+        if (!(err instanceof DecryptError) && !(err instanceof RangeError)) throw err;
+        // Not decryptable, or its base isn't in this note: nothing safe to merge.
+      }
+      this.deps.legacyPending.clear(keys.id);
+    }
+    this.setText({});
   }
 
   /** Our own unacked batches (this tab's, or a previous tab's in the same browser) must show here too. */
@@ -543,16 +638,18 @@ export class LiveNote {
   private flush(): Promise<void> {
     const keys = this.keys;
     if (!keys || this.queued.length === 0) return this.outgoing;
-    const ops = this.queued;
+    const batches = intoBatches(this.queued); // a big paste or import becomes several frames
     this.queued = [];
     this.sealing++;
     this.outgoing = this.outgoing.then(async () => {
-      const payload: OpsPayload = { v: 1, at: (this.deps.now ?? Date.now)(), r: this.replica, color: this.color, ops };
-      const sealed = await seal(keys.key, keys.id, "ops", payload);
-      const cid = `${this.replica}-${++this.cidCounter}`;
-      this.deps.outbox.add(keys.id, { cid, ...sealed }); // persisted before sending, even after dispose
+      for (const ops of batches) {
+        const payload: OpsPayload = { v: 1, at: (this.deps.now ?? Date.now)(), r: this.replica, color: this.color, ops };
+        const sealed = await seal(keys.key, keys.id, "ops", payload);
+        const cid = `${this.replica}-${++this.cidCounter}`;
+        this.deps.outbox.add(keys.id, { cid, ...sealed }); // persisted before sending, even after dispose
+        if (this.socket && this.open && !this.disposed) this.send({ t: "ops", cid, ...sealed });
+      }
       this.sealing--;
-      if (this.socket && this.open && !this.disposed) this.send({ t: "ops", cid, ...sealed });
       this.updateUnsent();
     });
     return this.outgoing;
