@@ -307,3 +307,23 @@ One entry per concept, written for future-me coming back after a long break.
 - Durable: edit batches → appended to the op log, replayed forever.
 - Ephemeral: cursor positions → relayed to whoever is in the room right now, never stored.
 - The viewer count is the one fact the server knows anyway (it counts connections), so it is sent in plaintext.
+
+## Local-first editing
+- The keystroke updates the local CRDT and the screen immediately. Networking is a background pipeline:
+  batch (50 ms) → seal → outbox (localStorage, ciphertext) → send → ack → remove from outbox.
+- Offline is just "the pipeline is paused"; typing never notices.
+
+## Contiguous sequence tracking (have)
+- `have` = largest N such that every op 1..N was received (via catch-up, broadcast, or our own acks).
+  Seqs that arrive out of order wait in a set until the gap fills. Reconnect says "hello, I have N".
+
+## Outbox + ack = at-least-once; idempotence = exactly-once in effect
+- Anything not acked is resent after a reconnect, so it may arrive twice — applying an op twice is a no-op.
+- Another tab's leftover outbox entries are replayed locally too, so every tab shows what will be delivered.
+
+## Heartbeats detect dead connections
+- A socket can look open but be dead (laptop sleep, Wi-Fi switch). App-level ping every 25 s; no pong in 10 s → reconnect.
+
+## Testing: wait for the thing you assert on
+- A flaky test waited for "unsent > 0" (true instantly) and then read the outbox (filled after async encryption).
+  Fix: wait for the outbox entry itself. Run new async tests 10–20× before trusting them.
