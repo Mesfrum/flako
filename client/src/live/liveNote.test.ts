@@ -370,9 +370,10 @@ describe("LiveNote presence, undo, limits, snapshots, IME", () => {
     a.setComposing(true);
     type(b, "remote");
     await advance(50);
-    await advance(200);
-    expect(a.getSnapshot().text).toBe("");
+    await until(() => hub.log.length === 1, "B's edit stored");
+    for (let i = 0; i < 300; i++) await tick(); // plenty of time for it to reach A…
+    expect(a.getSnapshot().text).toBe(""); // …where it is held while composing
     a.setComposing(false);
-    expect(a.getSnapshot().text).toBe("remote");
+    await until(() => a.getSnapshot().text === "remote", "applied when composition ends");
   });
 });
