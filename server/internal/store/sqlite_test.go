@@ -107,3 +107,29 @@ func countRows(t *testing.T, db *sql.DB, table string) int {
 	}
 	return n
 }
+
+func TestSQLiteOpLog(t *testing.T) {
+	runOpLogContract(t, func(t *testing.T) OpLog {
+		return openTestSQLite(t, filepath.Join(t.TempDir(), "notes.db"))
+	})
+}
+
+func TestSQLiteOpsSurviveReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "notes.db")
+	first, err := OpenSQLite(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendN(t, first, testID, 3)
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second := openTestSQLite(t, path)
+	if seq, err := second.LatestSeq(ctx, testID); err != nil || seq != 3 {
+		t.Fatalf("LatestSeq after reopen = %d, %v; want 3", seq, err)
+	}
+	if op, _ := second.AppendOp(ctx, testID, []byte("after-reopen!!!!"), testIV); op.Seq != 4 {
+		t.Errorf("next seq = %d, want 4", op.Seq)
+	}
+}

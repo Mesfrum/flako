@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver with database/sql
@@ -19,7 +20,8 @@ var migrationsFS embed.FS
 
 // SQLite is the production Store: one database file on disk.
 type SQLite struct {
-	db *sql.DB
+	db       *sql.DB
+	appendMu sync.Mutex // queues AppendOp calls (see sqlite_oplog.go)
 }
 
 var _ Store = (*SQLite)(nil)

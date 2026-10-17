@@ -259,3 +259,14 @@ One entry per concept, written for future-me coming back after a long break.
 ## AAD binding to stop cross-kind replay
 - AES-GCM's additional data is authenticated but not encrypted. We use `"<noteId>|<kind>"`.
 - A presence blob decrypted as "ops", or a blob from another note, fails authentication instead of being misread.
+
+## Event sourcing: append-only logs
+- Store every change as an immutable, numbered event (here: an encrypted op batch with seq 1, 2, 3 … per note).
+- Current state = replay (or snapshot + replay of the tail). History comes for free — Phase 3's time machine.
+- The server orders and stores events it cannot read; ordering needs no understanding of content.
+
+## Atomic "next number" in SQL
+- `INSERT … SELECT COALESCE(MAX(seq),0)+1 … RETURNING seq` is one statement; SQLite takes the write lock before
+  evaluating the SELECT, so two appends can't both read the same MAX (verified: the 20-goroutine test passes even without a Go mutex).
+- The `(note_id, seq)` primary key is the backstop that turns any bug into an error instead of a silent overwrite.
+- A Go mutex in front is only a courtesy: our goroutines queue instead of retrying on SQLITE_BUSY.

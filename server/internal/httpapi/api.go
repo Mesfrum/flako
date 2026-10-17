@@ -7,14 +7,12 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"regexp"
 
+	"github.com/Mesfrum/flako/server/internal/noteid"
 	"github.com/Mesfrum/flako/server/internal/store"
 )
 
 const maxBodyBytes = 1 << 20 // 1 MiB
-
-var noteIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 
 // API holds handler dependencies.
 type API struct {
@@ -59,7 +57,7 @@ type putResponse struct {
 
 func (a *API) getNote(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !noteIDPattern.MatchString(id) {
+	if !noteid.Valid(id) {
 		writeError(w, http.StatusBadRequest, "invalid note id")
 		return
 	}
@@ -82,7 +80,7 @@ func (a *API) getNote(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) putNote(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !noteIDPattern.MatchString(id) {
+	if !noteid.Valid(id) {
 		writeError(w, http.StatusBadRequest, "invalid note id")
 		return
 	}

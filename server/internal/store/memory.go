@@ -9,14 +9,20 @@ import (
 // Memory is an in-memory Store. It is the reference implementation of the
 // contract and the fake used by handler tests. Data is lost on restart.
 type Memory struct {
-	mu    sync.Mutex
-	notes map[string]Note
+	mu        sync.Mutex
+	notes     map[string]Note
+	ops       map[string][]StoredOp // see memory_oplog.go
+	snapshots map[string][]Snapshot
 }
 
 var _ Store = (*Memory)(nil) // compile-time check: *Memory satisfies Store
 
 func NewMemory() *Memory {
-	return &Memory{notes: make(map[string]Note)}
+	return &Memory{
+		notes:     make(map[string]Note),
+		ops:       make(map[string][]StoredOp),
+		snapshots: make(map[string][]Snapshot),
+	}
 }
 
 func (m *Memory) GetNote(_ context.Context, id string) (Note, error) {
