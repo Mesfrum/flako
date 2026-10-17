@@ -235,3 +235,9 @@ One entry per concept, written for future-me coming back after a long break.
 - "2,000 keystrokes in a 100 KB note < 300 ms" is a test like any other: if it fails, the code gets faster, the budget doesn't move.
 - What made it fast here: chunks of ~512 elements with cached visible counts (skip whole chunks to find index N),
   a two-level Map (replica → counter) instead of string keys like "r:c", and never `array.splice(i, 0, ...hugeArray)` (blows the call stack).
+
+## Undo in collaborative editors (selective undo via inverse ops)
+- "Go back to the previous version" would erase collaborators' work. Collaborative undo = undo MY ops only.
+- Record my own local ops in steps (keystrokes < 500 ms apart group together; moving the caret breaks the group).
+- Undo applies inverses as new ops: insert → delete those exact ids, delete → undelete those ids. Redo re-applies.
+- Inverses are ordinary CRDT ops with fresh Lamport stamps, so they sync and converge like any edit.
