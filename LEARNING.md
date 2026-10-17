@@ -196,3 +196,10 @@ One entry per concept, written for future-me coming back after a long break.
   server logs, proxy logs, or the `Referer` header. A path (`/taco`) is sent on every page load.
 - When the name is the key, it belongs in the fragment. `HashRouter` routes on `location.hash`.
 - Defence in depth: the request logger still records page paths as `[page]`, in case an old-style link is used.
+
+## Web: Web Workers
+- The page has ONE thread for JS, layout and input: 0.5s of Argon2 there freezes typing and scrolling.
+- `new Worker(new URL("./x.worker.ts", import.meta.url), { type: "module" })` starts a second thread (no DOM).
+  Talk with `postMessage` / `onmessage`; pass `[buffer]` as a transfer list to move bytes instead of copying.
+- We run only the slow Argon2 step there; HKDF + the non-extractable CryptoKey are made on the main thread where they're used.
+- Keep a fallback (`typeof Worker === "undefined"` in Node tests, or a crashed worker) that does the same work inline.

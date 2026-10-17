@@ -23,7 +23,12 @@ export interface NoteKeys {
 
 /** Expects an already-normalized name (see names/normalizeName). Takes ~0.5s on purpose. */
 export async function deriveNoteKeys(normalizedName: string): Promise<NoteKeys> {
-  const master = await argon2id({
+  return keysFromMaster(await argon2Master(normalizedName));
+}
+
+/** The slow, memory-hard half (~0.5s, 64 MiB). Safe to run in a Web Worker. */
+export async function argon2Master(normalizedName: string): Promise<Uint8Array> {
+  return argon2id({
     password: normalizedName,
     salt: KDF_PARAMS.salt,
     memorySize: KDF_PARAMS.memorySize,
@@ -32,7 +37,10 @@ export async function deriveNoteKeys(normalizedName: string): Promise<NoteKeys> 
     hashLength: KDF_PARAMS.hashLength,
     outputType: "binary",
   });
+}
 
+/** The fast half: HKDF into the note id and a non-extractable AES key (main thread). */
+export async function keysFromMaster(master: Uint8Array): Promise<NoteKeys> {
   const hkdfKey = await crypto.subtle.importKey("raw", master, "HKDF", false, ["deriveBits", "deriveKey"]);
   const hkdf = (info: string): HkdfParams => ({
     name: "HKDF",

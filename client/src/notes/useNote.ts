@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
-import { deriveNoteKeys } from "../crypto/derive";
+import { deriveNoteKeysInWorker } from "../crypto/deriveInWorker";
 import { createNotesApi } from "./api";
 import { NoteSync } from "./noteSync";
 import { createPendingStore } from "./pending";
@@ -9,7 +9,7 @@ const api = createNotesApi();
 /** Binds one note (by normalized name) to React. */
 export function useNote(name: string) {
   const sync = useMemo(
-    () => new NoteSync(name, { api, pending: createPendingStore(localStorage), derive: deriveNoteKeys }),
+    () => new NoteSync(name, { api, pending: createPendingStore(localStorage), derive: deriveNoteKeysInWorker }),
     [name],
   );
 
