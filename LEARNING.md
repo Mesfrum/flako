@@ -241,3 +241,13 @@ One entry per concept, written for future-me coming back after a long break.
 - Record my own local ops in steps (keystrokes < 500 ms apart group together; moving the caret breaks the group).
 - Undo applies inverses as new ops: insert → delete those exact ids, delete → undelete those ids. Redo re-applies.
 - Inverses are ordinary CRDT ops with fresh Lamport stamps, so they sync and converge like any edit.
+
+## Diffing input into operations
+- A textarea only reports its new value. Common prefix + common suffix of old/new → one splice (index, remove, insert).
+- Ambiguity ("aa" → "aaa") is settled by the caret: the common suffix may not reach left of the caret.
+- JS strings are UTF-16: "🌮" is two code units (a surrogate pair), and 🌮/🌯 share the first one.
+  Move splice edges outward so a pair is never split.
+
+## Anchors vs indices
+- "Position 6" breaks as soon as someone inserts before it. "Just after element id X" (null = start) survives anything.
+- Back to an index: indexOf(X) + 1 if X is visible, + 0 if it was deleted meanwhile.
