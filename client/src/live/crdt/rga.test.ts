@@ -94,11 +94,19 @@ describe("Rga basics", () => {
 });
 
 describe("Rga convergence (property)", () => {
-  it.each([1, 2, 3, 4, 5, 6, 7, 8])("random concurrent sessions converge (seed %i)", (seed) => {
+  it.each([
+    [1, 0], [2, 0], [3, 0], [4, 0], [5, 0], [6, 0], [7, 0], [8, 0],
+    [9, 3000], [10, 3000], [11, 3000], [12, 3000], // big shared start: edits cross internal chunk boundaries
+  ])("random concurrent sessions converge (seed %i, prefill %i)", (seed, prefill) => {
     const rand = mulberry32(seed);
     const pick = <T,>(xs: T[]) => xs[Math.floor(rand() * xs.length)];
     const replicas = ["1111111111111111", "2222222222222222", "3333333333333333"].map((r) => new Rga(r));
     const inbox: { to: number; op: Op }[] = [];
+    if (prefill > 0) {
+      const base = replicas[0].insert(0, "p".repeat(prefill));
+      replicas[1].apply(base);
+      replicas[2].apply(base);
+    }
     const ownDeletes: IdRange[][][] = [[], [], []]; // per replica: ranges of its own deletes (always known to it)
 
     const broadcast = (from: number, op: Op) => {
@@ -143,5 +151,61 @@ describe("Rga convergence (property)", () => {
     expect(b.text()).toBe(a.text());
     expect(c.text()).toBe(a.text());
     for (const r of replicas) expect(r.pendingCount()).toBe(0);
+  });
+});
+
+describe("Rga state", () => {
+  it("round-trips text, tombstones and future convergence", () => {
+    const a = new Rga("a".repeat(16));
+    const b = new Rga("b".repeat(16));
+    const o1 = a.insert(0, "hello world");
+    b.apply(o1);
+    a.delete(0, 6);
+    const restored = Rga.fromState("c".repeat(16), a.toState());
+    expect(restored.text()).toBe("world");
+    const late = b.insert(5, "!"); // anchored on the 'o' of "hello", which a deleted (a tombstone)
+    restored.apply(late);
+    a.apply(late);
+    expect(restored.text()).toBe(a.text());
+  });
+
+  it("new local ops after fromState get counters above everything in the state", () => {
+    const a = new Rga("a".repeat(16));
+    a.insert(0, "abc");
+    const r = Rga.fromState("c".repeat(16), a.toState());
+    const op = r.insert(3, "d");
+    expect(op.k === "ins" && op.id.c).toBeGreaterThan(3);
+  });
+
+  it("is compact: a 1 MiB single-run note serialises under 1.2 MiB", () => {
+    const a = new Rga("a".repeat(16));
+    a.insert(0, "x".repeat(1 << 20));
+    expect(JSON.stringify(a.toState()).length).toBeLessThan(1.2 * (1 << 20));
+  });
+
+  it("heavy history fits the snapshot frame: 1 MiB visible + 1 MiB tombstones < 8 MiB as base64-sealed", () => {
+    const a = new Rga("a".repeat(16));
+    const b = new Rga("b".repeat(16));
+    const run = "y".repeat(1 << 10); // 2,000 runs of 1 KiB = 2 MiB
+    for (let i = 0; i < 2000; i++) {
+      const who = i % 2 === 0 ? a : b;
+      const other = who === a ? b : a;
+      other.apply(who.insert(who.length, run));
+    }
+    for (let i = 1999; i >= 0; i -= 2) a.delete(i * run.length, run.length);
+    expect(a.length).toBe(1000 * run.length);
+    const sealedSize = (JSON.stringify(a.toState()).length * 4) / 3 + 1024;
+    expect(sealedSize).toBeLessThan(8 << 20);
+  });
+
+  it("stays fast: 2,000 single-char inserts at random spots in a 100 KB note < 300 ms", () => {
+    const a = new Rga("a".repeat(16));
+    a.insert(0, "z".repeat(100_000));
+    const rand = mulberry32(42);
+    const start = performance.now();
+    for (let i = 0; i < 2000; i++) a.insert(Math.floor(rand() * (a.length + 1)), "k");
+    const elapsed = performance.now() - start;
+    expect(a.length).toBe(102_000);
+    expect(elapsed).toBeLessThan(300);
   });
 });

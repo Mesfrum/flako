@@ -33,21 +33,60 @@ export function compareIds(a: ElemId, b: ElemId): number {
   return a.r < b.r ? -1 : a.r > b.r ? 1 : 0;
 }
 
+/**
+ * Snapshot format (frozen once stored; bump `v` to change it). Runs of consecutive ids from one
+ * replica, adjacent in the document, with the same visibility stamp:
+ * `[repIndex, firstCounter, text]` (never stamped) or
+ * `[repIndex, firstCounter, text, deleted 0|1, stampCounter, stampRepIndex]`.
+ */
+export interface RgaState {
+  v: 1;
+  clock: number;
+  reps: string[];
+  runs: (string | number)[][];
+}
+
 interface Node {
   c: number;
   r: string;
   ch: string; // one UTF-16 code unit
   stamp: ElemId | null; // latest del/undel stamp applied (last-writer-wins)
   deleted: boolean;
+  chunk: Chunk;
 }
 
-const key = (r: string, c: number) => `${r}:${c}`;
+/** Nodes live in chunks, so positions are found by skipping whole chunks instead of single nodes. */
+interface Chunk {
+  nodes: Node[];
+  visible: number;
+  text: string | null; // cached visible text of this chunk
+}
+
+const CHUNK_TARGET = 512;
+const CHUNK_MAX = 1024;
+
+/** id → node, two-level (replica → counter) so the hot path hashes numbers, not built strings. */
+class IdIndex {
+  private byReplica = new Map<string, Map<number, Node>>();
+  get(r: string, c: number): Node | undefined {
+    return this.byReplica.get(r)?.get(c);
+  }
+  has(r: string, c: number): boolean {
+    return this.byReplica.get(r)?.has(c) ?? false;
+  }
+  set(n: Node): void {
+    let m = this.byReplica.get(n.r);
+    if (!m) this.byReplica.set(n.r, (m = new Map()));
+    m.set(n.c, n);
+  }
+}
 
 export class Rga {
   readonly replica: string;
-  private nodes: Node[] = []; // document order, tombstones included
-  private byId = new Map<string, Node>();
+  private chunks: Chunk[] = []; // document order, tombstones included
+  private byId = new IdIndex();
   private clock = 0; // largest counter seen
+  private visibleCount = 0;
   private buffered: Op[] = []; // remote ops waiting for an unknown reference
   private cachedText: string | null = "";
 
@@ -56,16 +95,12 @@ export class Rga {
   }
 
   text(): string {
-    if (this.cachedText === null) {
-      let s = "";
-      for (const n of this.nodes) if (!n.deleted) s += n.ch;
-      this.cachedText = s;
-    }
+    if (this.cachedText === null) this.cachedText = this.chunks.map(chunkText).join("");
     return this.cachedText;
   }
 
   get length(): number {
-    return this.text().length;
+    return this.visibleCount;
   }
 
   pendingCount(): number {
@@ -83,12 +118,16 @@ export class Rga {
 
   delete(index: number, count: number): Op | null {
     const ids: ElemId[] = [];
-    let seen = 0;
-    for (const n of this.nodes) {
-      if (n.deleted) continue;
-      if (seen >= index + count) break;
-      if (seen >= index) ids.push({ c: n.c, r: n.r });
-      seen++;
+    if (count > 0 && index < this.visibleCount) {
+      let { ci, off } = this.visiblePosition(index);
+      while (ci < this.chunks.length && ids.length < count) {
+        const n = this.chunks[ci].nodes[off];
+        if (!n.deleted) ids.push({ c: n.c, r: n.r });
+        if (++off >= this.chunks[ci].nodes.length) {
+          ci++;
+          off = 0;
+        }
+      }
     }
     if (ids.length === 0) return null;
     return this.stampOp("del", toRanges(ids));
@@ -134,12 +173,12 @@ export class Rga {
   }
 
   private ready(op: Op): boolean {
-    if (op.k === "ins") return op.after === null || this.byId.has(key(op.after.r, op.after.c));
+    if (op.k === "ins") return op.after === null || this.byId.has(op.after.r, op.after.c);
     return op.ranges.every((rg) => this.knowsRange(rg));
   }
 
   private knowsRange(rg: IdRange): boolean {
-    for (let i = 0; i < rg.n; i++) if (!this.byId.has(key(rg.r, rg.c + i))) return false;
+    for (let i = 0; i < rg.n; i++) if (!this.byId.has(rg.r, rg.c + i)) return false;
     return true;
   }
 
@@ -155,14 +194,16 @@ export class Rga {
     let changed = false;
     for (const rg of op.ranges) {
       for (let i = 0; i < rg.n; i++) {
-        const n = this.byId.get(key(rg.r, rg.c + i))!;
+        const n = this.byId.get(rg.r, rg.c + i)!;
         if (n.stamp && compareIds(op.at, n.stamp) <= 0) continue; // an equal or newer stamp already won
         n.stamp = op.at;
         const deleted = op.k === "del";
-        if (n.deleted !== deleted) {
-          n.deleted = deleted;
-          changed = true;
-        }
+        if (n.deleted === deleted) continue;
+        n.deleted = deleted;
+        n.chunk.visible += deleted ? -1 : 1;
+        n.chunk.text = null;
+        this.visibleCount += deleted ? -1 : 1;
+        changed = true;
       }
     }
     if (changed) this.cachedText = null;
@@ -170,51 +211,212 @@ export class Rga {
   }
 
   private integrateInsert(op: Extract<Op, { k: "ins" }>): boolean {
-    if (op.text.length === 0 || this.byId.has(key(op.id.r, op.id.c))) return false; // idempotent
+    if (op.text.length === 0 || this.byId.has(op.id.r, op.id.c)) return false; // idempotent
     this.clock = Math.max(this.clock, op.id.c + op.text.length - 1);
-    let pos = op.after === null ? 0 : this.nodes.indexOf(this.byId.get(key(op.after.r, op.after.c))!) + 1;
-    // Classic RGA: skip elements with a bigger id (newer or tie-winning inserts at the same spot).
-    while (pos < this.nodes.length && compareIds(this.nodes[pos], op.id) > 0) pos++;
+
+    // Position just after `after` (or the document start)…
+    let ci = 0;
+    let off = 0;
+    if (op.after !== null) {
+      ({ ci, off } = this.positionOf(this.byId.get(op.after.r, op.after.c)!));
+      off++;
+    }
+    // …then classic RGA: skip elements with a bigger id (newer or tie-winning inserts at the same spot).
+    for (;;) {
+      if (ci < this.chunks.length && off >= this.chunks[ci].nodes.length) {
+        ci++;
+        off = 0;
+        continue;
+      }
+      if (ci >= this.chunks.length || compareIds(this.chunks[ci].nodes[off], op.id) <= 0) break;
+      off++;
+    }
+
     const fresh: Node[] = [];
     for (let i = 0; i < op.text.length; i++) {
-      const n: Node = { c: op.id.c + i, r: op.id.r, ch: op.text[i], stamp: null, deleted: false };
+      const n = { c: op.id.c + i, r: op.id.r, ch: op.text[i], stamp: null, deleted: false } as Node;
       fresh.push(n);
-      this.byId.set(key(n.r, n.c), n);
+      this.byId.set(n);
     }
-    this.nodes.splice(pos, 0, ...fresh);
+    this.insertNodes(ci, off, fresh);
+    this.visibleCount += fresh.length;
     this.cachedText = null;
     return true;
   }
 
+  /** Inserts nodes before position (ci, off); ci === chunks.length means the end. */
+  private insertNodes(ci: number, off: number, fresh: Node[]): void {
+    if (this.chunks.length === 0) {
+      this.chunks = makeChunks(fresh);
+      return;
+    }
+    if (ci >= this.chunks.length) {
+      ci = this.chunks.length - 1;
+      off = this.chunks[ci].nodes.length;
+    }
+    const target = this.chunks[ci];
+    if (target.nodes.length + fresh.length <= CHUNK_MAX) {
+      const tail = target.nodes.splice(off);
+      for (const n of fresh) {
+        n.chunk = target;
+        target.nodes.push(n);
+      }
+      for (const n of tail) target.nodes.push(n);
+      target.visible += fresh.length;
+      target.text = null;
+      if (target.nodes.length > CHUNK_MAX - CHUNK_TARGET / 2) this.chunks.splice(ci, 1, ...makeChunks(target.nodes));
+      return;
+    }
+    // Big insert: split the target around `off` and drop whole new chunks in between.
+    const left = target.nodes.slice(0, off);
+    const right = target.nodes.slice(off);
+    const replacement = [left, fresh, right].filter((ns) => ns.length > 0).flatMap((ns) => makeChunks(ns));
+    this.chunks.splice(ci, 1, ...replacement);
+  }
+
   // ---- positions ----
+
+  private positionOf(node: Node): { ci: number; off: number } {
+    return { ci: this.chunks.indexOf(node.chunk), off: node.chunk.nodes.indexOf(node) };
+  }
+
+  /** Position of the visible element at a visible index. */
+  private visiblePosition(index: number): { ci: number; off: number } {
+    let left = index;
+    for (let ci = 0; ci < this.chunks.length; ci++) {
+      const chunk = this.chunks[ci];
+      if (left >= chunk.visible) {
+        left -= chunk.visible;
+        continue;
+      }
+      for (let off = 0; off < chunk.nodes.length; off++) {
+        if (chunk.nodes[off].deleted) continue;
+        if (left === 0) return { ci, off };
+        left--;
+      }
+    }
+    throw new RangeError(`index ${index} out of range (length ${this.visibleCount})`);
+  }
 
   /** The visible element at a visible index (0 ≤ index < length). */
   idAt(index: number): ElemId {
-    let seen = 0;
-    for (const n of this.nodes) {
-      if (n.deleted) continue;
-      if (seen === index) return { c: n.c, r: n.r };
-      seen++;
-    }
-    throw new RangeError(`idAt(${index}) out of range (length ${seen})`);
+    const { ci, off } = this.visiblePosition(index);
+    const n = this.chunks[ci].nodes[off];
+    return { c: n.c, r: n.r };
   }
 
   /** Number of visible elements before the element (also works for tombstones). */
   indexOf(id: ElemId): number {
-    const target = this.byId.get(key(id.r, id.c));
-    if (!target) throw new RangeError(`unknown element ${id.r}:${id.c}`);
+    const node = this.byId.get(id.r, id.c);
+    if (!node) throw new RangeError(`unknown element ${id.r}:${id.c}`);
     let seen = 0;
-    for (const n of this.nodes) {
-      if (n === target) return seen;
+    for (const chunk of this.chunks) {
+      if (chunk === node.chunk) break;
+      seen += chunk.visible;
+    }
+    for (const n of node.chunk.nodes) {
+      if (n === node) break;
       if (!n.deleted) seen++;
     }
     return seen;
   }
 
   isVisible(id: ElemId): boolean {
-    const n = this.byId.get(key(id.r, id.c));
+    const n = this.byId.get(id.r, id.c);
     return n !== undefined && !n.deleted;
   }
+
+  // ---- snapshots ----
+
+  toState(): RgaState {
+    const reps: string[] = [];
+    const repIndex = new Map<string, number>();
+    const rep = (r: string) => {
+      let i = repIndex.get(r);
+      if (i === undefined) {
+        i = reps.length;
+        reps.push(r);
+        repIndex.set(r, i);
+      }
+      return i;
+    };
+    const runs: (string | number)[][] = [];
+    let run: { r: string; c: number; chars: string[]; last: Node } | null = null;
+    const flush = () => {
+      if (!run) return;
+      const n = run.last;
+      const entry: (string | number)[] = [rep(run.r), run.c, run.chars.join("")];
+      if (n.stamp) entry.push(n.deleted ? 1 : 0, n.stamp.c, rep(n.stamp.r));
+      runs.push(entry);
+    };
+    for (const chunk of this.chunks) {
+      for (const n of chunk.nodes) {
+        if (run && run.r === n.r && run.last.c + 1 === n.c && sameVisibility(run.last, n)) {
+          run.chars.push(n.ch);
+          run.last = n;
+          continue;
+        }
+        flush();
+        run = { r: n.r, c: n.c, chars: [n.ch], last: n };
+      }
+    }
+    flush();
+    return { v: 1, clock: this.clock, reps, runs };
+  }
+
+  static fromState(replica: string, state: RgaState): Rga {
+    if (state.v !== 1) throw new Error(`unsupported snapshot version ${String(state.v)}`);
+    const rga = new Rga(replica);
+    const all: Node[] = [];
+    for (const entry of state.runs) {
+      const r = state.reps[entry[0] as number];
+      const c = entry[1] as number;
+      const text = entry[2] as string;
+      const stamped = entry.length > 3;
+      const deleted = stamped && entry[3] === 1;
+      const stamp = stamped ? { c: entry[4] as number, r: state.reps[entry[5] as number] } : null;
+      for (let i = 0; i < text.length; i++) {
+        const n = { c: c + i, r, ch: text[i], stamp, deleted } as Node;
+        all.push(n);
+        rga.byId.set(n);
+        if (!deleted) rga.visibleCount++;
+      }
+    }
+    rga.chunks = makeChunks(all);
+    rga.clock = state.clock;
+    rga.cachedText = null;
+    return rga;
+  }
+}
+
+function chunkText(chunk: Chunk): string {
+  if (chunk.text === null) {
+    let s = "";
+    for (const n of chunk.nodes) if (!n.deleted) s += n.ch;
+    chunk.text = s;
+  }
+  return chunk.text;
+}
+
+/** Splits nodes into fresh chunks of CHUNK_TARGET and points each node at its chunk. */
+function makeChunks(nodes: Node[]): Chunk[] {
+  const out: Chunk[] = [];
+  for (let i = 0; i < nodes.length; i += CHUNK_TARGET) {
+    const slice = nodes.slice(i, i + CHUNK_TARGET);
+    const chunk: Chunk = { nodes: slice, visible: 0, text: null };
+    for (const n of slice) {
+      n.chunk = chunk;
+      if (!n.deleted) chunk.visible++;
+    }
+    out.push(chunk);
+  }
+  return out;
+}
+
+function sameVisibility(a: Node, b: Node): boolean {
+  if (a.deleted !== b.deleted) return false;
+  if (a.stamp === null || b.stamp === null) return a.stamp === b.stamp;
+  return a.stamp.c === b.stamp.c && a.stamp.r === b.stamp.r;
 }
 
 /** Merges ids into runs of consecutive counters from the same replica, preserving order. */

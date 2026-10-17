@@ -225,3 +225,13 @@ One entry per concept, written for future-me coming back after a long break.
 ## Testing: seeded property tests
 - Instead of hand-picked cases: generate hundreds of random concurrent edits with a seeded PRNG, deliver them shuffled with duplicates, assert all replicas agree.
 - Mutation check: break the algorithm on purpose and confirm the test goes red — otherwise the test proves nothing.
+
+## Snapshots and run-length encoding
+- A snapshot = the whole CRDT (tombstones too) as one blob, so joiners don't replay every op. Stored forever → versioned (`v: 1`).
+- Consecutive ids from one replica that sit next to each other with the same visibility collapse into one run `[replica, firstCounter, "text"]`.
+- Store the Lamport clock too, so a restored replica never reuses a counter.
+
+## Performance budgets in tests
+- "2,000 keystrokes in a 100 KB note < 300 ms" is a test like any other: if it fails, the code gets faster, the budget doesn't move.
+- What made it fast here: chunks of ~512 elements with cached visible counts (skip whole chunks to find index N),
+  a two-level Map (replica → counter) instead of string keys like "r:c", and never `array.splice(i, 0, ...hugeArray)` (blows the call stack).
