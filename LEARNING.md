@@ -251,3 +251,11 @@ One entry per concept, written for future-me coming back after a long break.
 ## Anchors vs indices
 - "Position 6" breaks as soon as someone inserts before it. "Just after element id X" (null = start) survives anything.
 - Back to an index: indexOf(X) + 1 if X is visible, + 0 if it was deleted meanwhile.
+
+## Wire format: outside vs inside an encrypted message
+- Outside (server-readable): message type, sequence numbers, ack ids, viewer count. Inside (sealed): edits, cursors, colours.
+- Design the outside to be the minimum the server needs to route and order — everything else goes inside.
+
+## AAD binding to stop cross-kind replay
+- AES-GCM's additional data is authenticated but not encrypted. We use `"<noteId>|<kind>"`.
+- A presence blob decrypted as "ops", or a blob from another note, fails authentication instead of being misread.
