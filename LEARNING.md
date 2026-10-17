@@ -203,3 +203,25 @@ One entry per concept, written for future-me coming back after a long break.
   Talk with `postMessage` / `onmessage`; pass `[buffer]` as a transfer list to move bytes instead of copying.
 - We run only the slow Argon2 step there; HKDF + the non-extractable CryptoKey are made on the main thread where they're used.
 - Keep a fallback (`typeof Worker === "undefined"` in Node tests, or a crashed worker) that does the same work inline.
+
+## CRDTs: convergence, commutativity, idempotence
+- A CRDT lets replicas edit independently; once everyone has the same set of ops, everyone has the same state.
+- Needs: ops commute (any order → same result) and are idempotent (applying twice = once). Then networks can reorder, duplicate and delay freely.
+
+## RGA: ids, insert-after, tie-break, tombstones
+- Each character has a permanent id `(counter, replica)`. Insert = "after id X", never "at index 3" (indices shift under concurrency).
+- Several inserts after the same X: skip right over elements with a BIGGER id, insert there → bigger id first, same on every replica.
+- Delete hides the element (tombstone); it stays so concurrent inserts anchored to it still land correctly.
+- Ops referencing ids we don't have yet are buffered and retried after every successful apply.
+
+## Lamport clocks
+- Counter = 1 + the largest counter ever seen (local or remote). Gives "newer ⇒ bigger" without synchronised wall clocks.
+- Children always get bigger ids than their parent, which is why RGA's "skip bigger ids" rule is correct.
+
+## Last-writer-wins registers (delete/undelete)
+- Each delete/undelete carries its own Lamport stamp; an element keeps the biggest stamp it has seen and its kind decides visibility.
+- Concurrent delete vs undelete therefore resolves the same everywhere.
+
+## Testing: seeded property tests
+- Instead of hand-picked cases: generate hundreds of random concurrent edits with a seeded PRNG, deliver them shuffled with duplicates, assert all replicas agree.
+- Mutation check: break the algorithm on purpose and confirm the test goes red — otherwise the test proves nothing.
