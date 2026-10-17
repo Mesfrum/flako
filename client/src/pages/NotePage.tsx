@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
 import { Link, Navigate, useLocation } from "react-router-dom";
 import { normalizeName } from "../names/names";
-import type { SaveState } from "../notes/noteSync";
-import { useNote } from "../notes/useNote";
+import { LiveTextarea } from "../components/LiveTextarea";
+import type { LiveSnapshot } from "../live/liveNote";
+import { useLiveNote } from "../live/useLiveNote";
 
 function nameFromPath(pathname: string): string {
   const raw = pathname.slice(1);
@@ -25,12 +26,13 @@ export default function NotePage() {
 }
 
 function NoteEditor({ name }: { name: string }) {
-  const { status, text, setText, resolveConflict } = useNote(name);
+  const note = useLiveNote(name);
+  const { status } = note;
 
   if (status.kind === "deriving") return <Centered>deriving keys for “{name}”…</Centered>;
-  if (status.kind === "loading") return <Centered>fetching…</Centered>;
+  if (status.kind === "connecting") return <Centered>connecting…</Centered>;
   if (status.kind === "unreadable")
-    return <Centered>this note exists but cannot be decrypted with this name. saving is disabled.</Centered>;
+    return <Centered>this note exists but cannot be decrypted with this name. editing is disabled.</Centered>;
   if (status.kind === "error") return <Centered>{status.message}. reload to try again.</Centered>;
 
   return (
@@ -40,27 +42,18 @@ function NoteEditor({ name }: { name: string }) {
           home
         </Link>
         <span className="truncate font-mono">/{name}</span>
-        <span aria-live="polite">{describeSave(status.save)}</span>
+        <span aria-live="polite">{describeConn(note)}</span>
       </header>
-
-      {status.save.kind === "conflict" && (
-        <div role="alert" className="flex flex-wrap gap-3 border p-3 text-sm">
-          <span>this note was changed somewhere else.</span>
-          <button className="underline" onClick={() => void resolveConflict("theirs")}>
-            load theirs
-          </button>
-          <button className="underline" onClick={() => void resolveConflict("mine")}>
-            overwrite with mine
-          </button>
-        </div>
-      )}
-
-      <textarea
-        autoFocus
-        value={text}
-        onChange={(e) => setText(e.target.value)}
+      <LiveTextarea
+        text={note.text}
+        selection={note.selection}
+        onChange={note.change}
+        onSelect={note.select}
+        onUndo={note.undo}
+        onRedo={note.redo}
+        onComposing={note.setComposing}
+        cursors={note.cursors}
         placeholder="type. it encrypts itself."
-        className="min-h-[70vh] w-full resize-none border p-4 font-mono focus:outline-none"
       />
     </main>
   );
@@ -70,19 +63,10 @@ function Centered({ children }: { children: ReactNode }) {
   return <p className="p-10 text-center font-mono text-sm">{children}</p>;
 }
 
-function describeSave(save: SaveState): string {
-  switch (save.kind) {
-    case "clean":
-      return save.savedAt ? `saved ${new Date(save.savedAt).toLocaleTimeString()}` : "nothing saved yet";
-    case "dirty":
-      return "unsaved changes";
-    case "saving":
-      return "saving…";
-    case "unsaved":
-      return `offline: retrying in ${Math.round(save.retryInMs / 1000)}s`;
-    case "conflict":
-      return "conflict";
-    case "tooLarge":
-      return "too large to save";
-  }
+function describeConn(s: Pick<LiveSnapshot, "full" | "conn" | "unsent" | "here">): string {
+  if (s.full) return "note is full";
+  if (s.conn === "busy") return "note is busy";
+  if (s.conn === "offline") return s.unsent > 0 ? `offline — will sync (${s.unsent} unsent)` : "offline — will sync";
+  if (s.conn === "connecting") return "connecting…";
+  return `live · ${s.here} here`;
 }

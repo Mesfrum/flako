@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     // Browser talks only to Vite; Vite forwards API calls to Go. Same origin, no CORS.
-    proxy: { "/api": "http://localhost:8080" },
+    proxy: { "/api": { target: "http://localhost:8080", ws: true } },
   },
   build: {
     outDir: "../server/internal/web/dist",
