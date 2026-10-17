@@ -270,3 +270,30 @@ One entry per concept, written for future-me coming back after a long break.
   evaluating the SELECT, so two appends can't both read the same MAX (verified: the 20-goroutine test passes even without a Go mutex).
 - The `(note_id, seq)` primary key is the backstop that turns any bug into an error instead of a silent overwrite.
 - A Go mutex in front is only a courtesy: our goroutines queue instead of retrying on SQLITE_BUSY.
+
+## WebSockets vs HTTP
+- HTTP: one request, one response. WebSocket: an HTTP request with `Upgrade: websocket` → `101 Switching Protocols`,
+  and the same TCP connection becomes a long-lived two-way message pipe.
+- In Go the handler "hijacks" the connection from net/http and keeps it until the conversation ends.
+
+## Goroutine per connection + writer goroutine
+- Reader: the handler's own goroutine loops on "read message, handle it". Writer: a second goroutine is the ONLY one that
+  writes data frames. A third (pinger) sends WebSocket pings to detect dead peers.
+- They share one `context`: whoever fails first calls `cancel()`, and everyone else's `select` sees `ctx.Done()`.
+
+## Channels and select
+- A channel is a typed pipe between goroutines. `select` waits on several at once and runs whichever is ready first.
+- Two channels per peer: `direct` (replies; the sender may wait) and `bcast` (other people's messages; never waited on).
+
+## Fan-out without blocking
+- Broadcasting = `select { case p.bcast <- msg: default: }` for each peer. A full queue means "too slow" — never a frozen room.
+
+## Long-lived connections vs server timeouts — a correction
+- Plan assumption: http.Server's 15 s Read/WriteTimeout deadlines survive the upgrade and kill live notes.
+- Reality (Go 1.24): net/http clears the deadlines when a handler hijacks the connection (server.go `hijackLocked`).
+  A mutation test proved the "fix" was dead code, so it was removed; the test that a connection outlives the timeouts stays.
+- Lesson: check the standard library too, not just the third-party library — and prove a fix matters by removing it.
+
+## Unwrap and hijacking
+- Middleware wraps http.ResponseWriter. The WebSocket library finds the real connection by calling `Unwrap()` repeatedly.
+  Without `statusRecorder.Unwrap()` every upgrade through our logger fails (mutation-verified).

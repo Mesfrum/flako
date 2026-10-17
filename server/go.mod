@@ -2,7 +2,10 @@ module github.com/Mesfrum/flako/server
 
 go 1.24
 
-require modernc.org/sqlite v1.38.2
+require (
+	github.com/coder/websocket v1.8.15
+	modernc.org/sqlite v1.38.2
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
