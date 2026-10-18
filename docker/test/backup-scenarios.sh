@@ -57,6 +57,19 @@ write_op() { "$WSC" write "$WS" 2>/dev/null; }
 note_seq() { "$WSC" seq "$WS" 2>/dev/null | sed 's/^seq //'; }
 
 # expect_seq N: the server holds exactly N ops for the note.
+# expect_paused: the entrypoint must have logged that replication is off for this boot.
+expect_paused() {
+  $DC logs app 2>&1 | grep -q "BACKUPS PAUSED" || {
+    say "expected 'BACKUPS PAUSED' log line"
+    return 1
+  }
+  $DC exec -T app sh -c 'pgrep litestream' >/dev/null 2>&1 && {
+    say "litestream is running but must not be after a failed restore"
+    return 1
+  }
+  return 0
+}
+
 expect_seq() {
   got=$(note_seq)
   [ "$got" = "$1" ] || {
@@ -74,6 +87,12 @@ s1() { # no R2_* vars
   healthy 30 || return 1
   $DC logs app 2>&1 | grep -q "backups off" || {
     say "log line 'backups off' missing"
+    return 1
+  }
+  # exec: the server itself must be PID 1, exactly like the pre-Litestream image.
+  [ "$($DC exec -T app cat /proc/1/comm 2>/dev/null | tr -d '
+')" = "flako-server" ] || {
+    say "PID 1 is not flako-server"
     return 1
   }
 }
@@ -96,17 +115,19 @@ s3() { # wrong keys
   export T_SECRET=wrong-secret
   app_up
   healthy 30 || return 1
-  expect_seq 0
+  expect_seq 0 || return 1
+  expect_paused
 }
 
 s4() { # endpoint unreachable (blackhole address: connections hang rather than fail fast)
   reset
   export T_ENDPOINT=http://10.255.255.1:9000
   app_up
-  healthy 30
+  healthy 30 || return 1
+  expect_paused
 }
 
-s5() { # restore hangs (S3 server paused after a good backup exists)
+s5() { # restore hangs (S3 paused after a good backup); then S3 recovers and the note comes back
   reset
   s3_up || return 1
   app_up
@@ -121,8 +142,18 @@ s5() { # restore hangs (S3 server paused after a good backup exists)
   }
   r=0
   expect_seq 0 || r=1
+  expect_paused || r=1
+  write_op >/dev/null # a write during the paused boot must not reach (or damage) the backup
   $DC unpause s3 >/dev/null 2>&1
-  return $r
+  [ "$r" = 0 ] || return 1
+  sleep 3
+  app_up # next boot, S3 healthy again: the ORIGINAL note must be restored
+  healthy 30 || return 1
+  got=$(note_seq)
+  [ "${got:-0}" -ge 1 ] || {
+    say "note not restored after S3 recovered (seq '$got')"
+    return 1
+  }
 }
 
 s6() { # corrupt backup: every replica object overwritten with junk
@@ -136,7 +167,8 @@ s6() { # corrupt backup: every replica object overwritten with junk
   $DC --profile tools run --rm --no-deps -T aws -c     "for k in \$($AWS s3api list-objects-v2 --bucket $BUCKET --query 'Contents[].Key' --output text | tr '	' ' '); do echo junk-junk-junk | $AWS s3 cp - s3://$BUCKET/\$k >/dev/null; done; $AWS s3 ls s3://$BUCKET --recursive | wc -l" 2>/dev/null | tail -1 | sed 's/^/    objects sabotaged: /'
   app_up
   healthy 30 || return 1
-  expect_seq 0
+  expect_seq 0 || return 1
+  expect_paused
 }
 
 s7() { # kill -9 Litestream: server keeps answering
@@ -151,14 +183,18 @@ s7() { # kill -9 Litestream: server keeps answering
   write_op >/dev/null # and the server still works end to end
 }
 
-s8a() { # docker stop -t 30 with S3 unreachable: exits in < 30 s
+s8a() { # S3 goes unreachable with data pending: stop -t 30 still exits in < 30 s
   reset
-  export T_ENDPOINT=http://10.255.255.1:9000
+  s3_up || return 1
   app_up
   healthy 30 || return 1
+  sleep 3 # let replication start
+  write_op >/dev/null || return 1 # pending data => the final upload has real work and will hang
+  $DC pause s3 >/dev/null 2>&1
   t0=$(date +%s)
   $DC stop -t 30 app >/dev/null 2>&1
   dt=$(($(date +%s) - t0))
+  $DC unpause s3 >/dev/null 2>&1
   say "stopped in ${dt}s"
   [ "$dt" -lt 30 ]
 }

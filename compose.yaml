@@ -7,6 +7,7 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    stop_grace_period: 30s  # room for Litestream's final upload after SIGTERM (Compose default is 10 s)
     environment:
       ADDR: ":8080"
       DB_PATH: "/data/notes.db"

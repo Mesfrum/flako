@@ -39,7 +39,7 @@ restore_db() {
   if [ "$rc" -ne 0 ]; then
     log "WARNING: restore failed or timed out (exit $rc); starting with an EMPTY database"
     rm -f "$tmp" "$tmp-wal" "$tmp-shm"
-    return 0
+    return 1
   fi
   if [ ! -s "$tmp" ]; then
     log "no backup exists yet; starting with an empty database"
@@ -50,7 +50,7 @@ restore_db() {
   if [ "$check" != "ok" ]; then
     log "WARNING: restored database failed integrity_check ('$check'); starting with an EMPTY database"
     rm -f "$tmp" "$tmp-wal" "$tmp-shm"
-    return 0
+    return 1
   fi
   rm -f "$DB_PATH-wal" "$DB_PATH-shm" # stale sidecars would corrupt the restored file
   if mv "$tmp" "$DB_PATH"; then
@@ -59,11 +59,25 @@ restore_db() {
   else
     log "WARNING: could not move the restored database into place; starting EMPTY"
     rm -f "$tmp" "$tmp-wal" "$tmp-shm"
+    return 1
   fi
   return 0
 }
 
-[ "$BACKUPS" = 1 ] && restore_db
+# restore_db returns 0 for "restored", "no backup yet" and "local DB kept"; 1 for a FAILED restore.
+# After a failed restore the server still boots (empty DB) but Litestream is NOT started for this
+# boot: replicating an empty DB after an R2 hiccup could replace the good backup with nothing.
+REPLICATE=0
+if [ "$BACKUPS" = 1 ]; then
+  if restore_db; then
+    REPLICATE=1
+  else
+    log "WARNING: BACKUPS PAUSED FOR THIS BOOT - restore failed, so replication is off to protect the existing backup"
+  fi
+else
+  # Backups off: be exactly the old image - the server is PID 1 and receives signals directly.
+  exec flako-server
+fi
 
 SERVER_PID=""
 LS_PID=""
@@ -78,7 +92,7 @@ trap on_signal TERM INT
 flako-server &
 SERVER_PID=$!
 
-if [ "$BACKUPS" = 1 ]; then
+if [ "$REPLICATE" = 1 ]; then
   # Start replication only once the server is listening (it creates and migrates the DB first).
   PORT="${ADDR##*:}"
   PORT="${PORT:-8080}"
