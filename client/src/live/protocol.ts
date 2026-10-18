@@ -10,14 +10,21 @@ export interface SealedWire {
 }
 
 export type ClientMsg =
-  | { t: "hello"; have: number }
+  | { t: "hello"; have: number; haveIv?: string } // haveIv: IV of the op at `have`; lets the server spot a rewound log
   | ({ t: "ops"; cid: string } & SealedWire)
   | ({ t: "presence" } & SealedWire)
   | ({ t: "snapshot"; upTo: number } & SealedWire)
   | { t: "ping" };
 
 export type ServerMsg =
-  | { t: "welcome"; seq: number; here: number; snapshot: ({ upTo: number } & SealedWire) | null }
+  | {
+      t: "welcome";
+      seq: number;
+      here: number;
+      snapshot: ({ upTo: number } & SealedWire) | null;
+      reset: boolean; // the server's log is not the one this client knew: it caught us up from zero
+      seqIv: string; // IV of the server's op at `seq` ("" when seq is 0)
+    }
   | ({ t: "op"; seq: number } & SealedWire)
   | { t: "ack"; cid: string; seq: number }
   | { t: "synced"; seq: number }

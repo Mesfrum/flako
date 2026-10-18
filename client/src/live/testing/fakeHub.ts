@@ -19,6 +19,9 @@ export class FakeHub {
   snapshots: { upTo: number; ct: string; iv: string }[] = [];
   /** Every hello's `have`, in arrival order. */
   hellos: number[] = [];
+  /** Every hello in full, and the `reset` flag of every welcome sent. */
+  helloMsgs: { have: number; haveIv?: string }[] = [];
+  welcomes: { reset: boolean }[] = [];
   private silent = false;
   private nextId = 0;
   private live = new Set<FakePeer>();
@@ -43,6 +46,13 @@ export class FakeHub {
     for (const p of [...this.live]) this.disconnect(p, true);
   }
 
+  /** A restored backup: forget everything above `toSeq` (log and snapshots), and drop every socket. */
+  rewind(toSeq: number): void {
+    this.log = this.log.slice(0, toSeq);
+    this.snapshots = this.snapshots.filter((s) => s.upTo <= toSeq);
+    this.dropAll();
+  }
+
   /** Stops replying to anyone (pong, acks, broadcasts) without closing: a dead socket. */
   silence(): void {
     this.silent = true;
@@ -62,12 +72,26 @@ export class FakeHub {
     switch (m.t) {
       case "hello": {
         this.hellos.push(m.have);
+        this.helloMsgs.push({ have: m.have, haveIv: m.haveIv });
         p.joined = true;
         const room = this.room(p.noteId);
         const latest = this.log.length;
-        const snap = m.have === 0 ? this.snapshots[this.snapshots.length - 1] ?? null : null;
-        this.sendTo(p, { t: "welcome", seq: latest, here: room.length, snapshot: snap });
-        const from = Math.max(m.have, snap?.upTo ?? 0);
+        // Same rule as the Go hub: the IV of the op at `have` fingerprints the history. Missing or
+        // different → the log was rewound/replaced, so catch up from zero and say so.
+        let have = m.have;
+        let reset = false;
+        if (have > 0 && m.haveIv) {
+          const mine = this.log[have - 1];
+          if (!mine || mine.seq !== have || mine.iv !== m.haveIv) {
+            reset = true;
+            have = 0;
+          }
+        }
+        this.welcomes.push({ reset });
+        const snap = have === 0 ? this.snapshots[this.snapshots.length - 1] ?? null : null;
+        const seqIv = latest > 0 ? this.log[latest - 1].iv : "";
+        this.sendTo(p, { t: "welcome", seq: latest, here: room.length, snapshot: snap, reset, seqIv });
+        const from = Math.max(have, snap?.upTo ?? 0);
         for (const op of this.log.slice(from, latest)) this.sendTo(p, { t: "op", ...op });
         this.sendTo(p, { t: "synced", seq: latest });
         this.broadcast(p, { t: "here", n: room.length });

@@ -455,3 +455,186 @@ describe("LiveNote: Phase 1 notes and large edits", () => {
     await until(() => b.getSnapshot().text === paste, "friend has the whole paste");
   });
 });
+
+describe("LiveNote: repairing after the server lost history", () => {
+  /** Types `next` and waits until the hub has stored it and this tab has the ack. */
+  async function typeAcked(note: LiveNote, hub: FakeHub, next: string) {
+    const before = hub.log.length;
+    type(note, next);
+    await advance(50);
+    await until(() => hub.log.length > before && note.getSnapshot().unsent === 0, `"${next}" stored and acked`);
+  }
+
+  const sorted = (s: string) => [...s].sort().join("");
+
+  it("rewound server: tab ahead re-sends lost edits", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub);
+    await ready(a);
+    await typeAcked(a, hub, "hello");
+    const seen = new Set<string>();
+    a.subscribe(() => seen.add(a.getSnapshot().text));
+    hub.rewind(0);
+    expect(hub.log).toHaveLength(0);
+    await advance(1100);
+    await until(() => hub.log.length >= 1 && a.getSnapshot().conn === "live", "A repaired the server");
+    const hello = hub.helloMsgs[hub.helloMsgs.length - 1];
+    expect(hello.have).toBeGreaterThan(0);
+    expect(hello.haveIv).toBeTruthy();
+    expect(hub.welcomes[hub.welcomes.length - 1].reset).toBe(true);
+    expect(a.getSnapshot().text).toBe("hello");
+    expect([...seen]).toEqual(["hello"]); // the text never changed, not even for a moment
+
+    const c = engine(hub);
+    await ready(c);
+    await until(() => c.getSnapshot().text === "hello", "a newcomer sees the repaired note");
+  });
+
+  it("rewound then advanced: no skipped ops", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub);
+    await ready(a);
+    for (const t of ["A", "AB", "ABC", "ABCD"]) await typeAcked(a, hub, t);
+    expect(hub.log).toHaveLength(4);
+    hub.rewind(2);
+    const b = engine(hub);
+    await ready(b); // catches up on A's first two ops
+    await until(() => b.getSnapshot().text === "AB", "B has the surviving prefix");
+    for (const t of ["AB1", "AB12", "AB123"]) await typeAcked(b, hub, t);
+    expect(hub.log).toHaveLength(5); // seqs 3-5 are different ops reusing numbers A has already seen
+    await advance(1100);
+    await until(
+      () => a.getSnapshot().conn === "live" && sorted(a.getSnapshot().text) === "123ABCD",
+      "A has B's edits and its own",
+    );
+    const c = engine(hub);
+    await ready(c);
+    await until(() => sorted(c.getSnapshot().text) === "123ABCD", "newcomer has everything");
+    await until(
+      () => a.getSnapshot().text === b.getSnapshot().text && b.getSnapshot().text === c.getSnapshot().text,
+      "A, B and C converge",
+    );
+  });
+
+  it("healthy reconnect sends haveIv and gets no reset", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub);
+    await ready(a);
+    await typeAcked(a, hub, "steady");
+    const n = hub.log.length;
+    hub.dropAll();
+    await advance(1100);
+    await until(() => hub.welcomes.length === 2 && a.getSnapshot().conn === "live", "reconnected");
+    expect(hub.helloMsgs[1].have).toBe(n);
+    expect(hub.helloMsgs[1].haveIv).toBeTruthy();
+    expect(hub.welcomes[1].reset).toBe(false);
+    await advance(300);
+    expect(hub.log).toHaveLength(n);
+    expect(a.getSnapshot().text).toBe("steady");
+  });
+
+  it("two tabs repairing at once converge", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub);
+    const b = engine(hub);
+    await ready(a);
+    await ready(b);
+    await typeAcked(a, hub, "alpha");
+    await until(() => b.getSnapshot().text === "alpha", "B has alpha");
+    await typeAcked(b, hub, "alpha beta");
+    await until(() => a.getSnapshot().text === "alpha beta", "A has beta");
+    const original = hub.log.length;
+    hub.rewind(0);
+    await advance(1100);
+    await until(() => hub.log.length >= 1 && a.getSnapshot().conn === "live" && b.getSnapshot().conn === "live", "both repaired");
+    const c = engine(hub);
+    await ready(c);
+    await until(() => c.getSnapshot().text === "alpha beta", "newcomer converges");
+    await advance(300);
+    expect(a.getSnapshot().text).toBe("alpha beta");
+    expect(b.getSnapshot().text).toBe("alpha beta");
+    expect(hub.log.length).toBeLessThanOrEqual(2 * original);
+  });
+
+  it("a tab resetting after another already repaired the note sends nothing", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub);
+    const b = engine(hub);
+    await ready(a);
+    await ready(b);
+    await typeAcked(a, hub, "alpha");
+    await until(() => b.getSnapshot().text === "alpha", "B has alpha");
+    await typeAcked(a, hub, "alp"); // a delete, so the filter's del/undel rule is exercised too
+    await until(() => b.getSnapshot().text === "alp", "B has the delete");
+    hub.online = false;
+    hub.rewind(0);
+    await until(() => a.getSnapshot().conn === "offline" && b.getSnapshot().conn === "offline", "both offline");
+    hub.online = true;
+    a.retryNow();
+    await until(() => hub.log.length >= 1 && a.getSnapshot().conn === "live", "A repaired the server");
+    const repaired = hub.log.length;
+    b.retryNow();
+    await until(() => hub.welcomes.length === 4 && b.getSnapshot().conn === "live", "B reconnected");
+    expect(hub.welcomes[3].reset).toBe(true);
+    await advance(300);
+    expect(hub.log).toHaveLength(repaired); // B's text is all on the server already
+    expect(b.getSnapshot().text).toBe("alp");
+  });
+
+  it("unsent outbox edits appear exactly once after a repair", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub);
+    await ready(a);
+    await typeAcked(a, hub, "base");
+    hub.holdAcks = true;
+    type(a, "base+more");
+    await advance(50);
+    await until(() => hub.log.length === 2 && a.getSnapshot().unsent === 1, "second edit stored but unacked");
+    hub.rewind(0);
+    hub.holdAcks = false;
+    await advance(1100);
+    await until(() => a.getSnapshot().conn === "live" && a.getSnapshot().unsent === 0, "repaired and acked");
+    expect(a.getSnapshot().text).toBe("base+more");
+    const c = engine(hub);
+    await ready(c);
+    await until(() => c.getSnapshot().text === "base+more", "newcomer sees each edit once");
+  });
+
+  it("a reset arriving mid-composition changes nothing until it ends", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub);
+    await ready(a);
+    await typeAcked(a, hub, "base");
+    hub.rewind(0);
+    a.setComposing(true);
+    const b = engine(hub);
+    await ready(b);
+    await typeAcked(b, hub, "XYZ"); // the new log already holds text A has never seen
+    await advance(1100);
+    await until(() => a.getSnapshot().conn === "live", "A reconnected and repaired");
+    await until(() => b.getSnapshot().text.includes("base"), "B received A's repair");
+    expect(a.getSnapshot().text).toBe("base");
+    a.setComposing(false);
+    await until(() => a.getSnapshot().text === b.getSnapshot().text, "converged after composition");
+    expect(sorted(a.getSnapshot().text)).toBe(sorted("baseXYZ"));
+  });
+
+  it("a ~900 KiB note is repaired in frames under the limit", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub);
+    await ready(a);
+    const big = "x".repeat(900 << 10);
+    type(a, big);
+    await advance(50);
+    await until(() => a.getSnapshot().unsent === 0 && hub.log.length >= 4, "big note stored");
+    const original = hub.log.length;
+    hub.rewind(0);
+    await advance(1100);
+    await until(() => hub.log.length >= original && a.getSnapshot().unsent === 0, "repair frames stored");
+    for (const entry of hub.log) expect(fromBase64(entry.ct).length).toBeLessThanOrEqual(256 << 10);
+    expect(a.getSnapshot().full).toBe(false);
+    const c = engine(hub);
+    await ready(c);
+    await until(() => c.getSnapshot().text.length === big.length, "newcomer converges");
+  }, 30_000);
+});

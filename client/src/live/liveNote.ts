@@ -2,7 +2,7 @@ import { DecryptError, decryptNote } from "../crypto/cipher";
 import type { NoteKeys } from "../crypto/derive";
 import type { NotesApi } from "../notes/api";
 import type { PendingStore } from "../notes/pending";
-import { Rga, type Op } from "./crdt/rga";
+import { Rga, opsFromState, type Op, type RgaState } from "./crdt/rga";
 import { UndoManager } from "./crdt/undo";
 import { fromAnchor, spliceFromChange, toAnchor, type Anchor } from "./editing";
 import { importOps, legacySpliceOps } from "./importLegacy";
@@ -135,6 +135,56 @@ function exceeds(text: string, maxBytes: number): boolean {
   return encoder.encode(text).length > maxBytes;
 }
 
+/** What a server-side replica holds, as sorted runs per replica id (cheap to query, no per-char map). */
+type RunIndex = Map<string, { c: number; n: number; stamp: string }[]>;
+
+function indexState(state: RgaState): RunIndex {
+  const index: RunIndex = new Map();
+  for (const entry of state.runs) {
+    const r = state.reps[entry[0] as number];
+    const stamp = entry.length > 3 ? `${entry[3]}:${entry[4]}:${state.reps[entry[5] as number]}` : "";
+    let runs = index.get(r);
+    if (!runs) index.set(r, (runs = []));
+    runs.push({ c: entry[1] as number, n: (entry[2] as string).length, stamp });
+  }
+  for (const runs of index.values()) runs.sort((x, y) => x.c - y.c);
+  return index;
+}
+
+/** True when every id in (r, c .. c+n-1) is held; with `stamp`, also stamped exactly that way. */
+function holdsAll(index: RunIndex, r: string, c: number, n: number, stamp?: string): boolean {
+  const runs = index.get(r);
+  if (!runs) return n === 0;
+  const end = c + n;
+  while (c < end) {
+    let lo = 0;
+    let hi = runs.length - 1;
+    let hit = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (runs[mid].c <= c) {
+        hit = mid;
+        lo = mid + 1;
+      } else hi = mid - 1;
+    }
+    const run = hit >= 0 ? runs[hit] : undefined;
+    if (!run || c >= run.c + run.n) return false;
+    if (stamp !== undefined && run.stamp !== stamp) return false;
+    c = run.c + run.n;
+  }
+  return true;
+}
+
+/** The ops the server's replica lacks, taken from my state: a whole insert unless it holds every char. */
+function opsServerLacks(mine: Rga, server: Rga): Op[] {
+  const index = indexState(server.toState());
+  return opsFromState(mine.toState()).filter((op) => {
+    if (op.k === "ins") return !holdsAll(index, op.id.r, op.id.c, op.text.length);
+    const stamp = `${op.k === "del" ? 1 : 0}:${op.at.c}:${op.at.r}`;
+    return !op.ranges.every((rg) => holdsAll(index, rg.r, rg.c, rg.n, stamp));
+  });
+}
+
 function randomReplica(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -193,6 +243,10 @@ export class LiveNote {
   private presenceOut: Promise<void> = Promise.resolve();
   private legacyChecked = false; // Phase 1 import / unsent-text merge happens once per session
   private welcomeHadSnapshot = false;
+  // IV of the server op at `have` (and at seqs in `above`): sent as haveIv so a rewound log is noticed.
+  private haveIvs = new Map<number, string>();
+  // While catching up after a reset: what the server holds, to re-send only what it lacks at `synced`.
+  private repair: Rga | null = null;
 
   constructor(name: string, deps: LiveNoteDeps) {
     this.name = name;
@@ -327,7 +381,8 @@ export class LiveNote {
       onOpen: () => {
         if (!current()) return;
         this.open = true;
-        this.send({ t: "hello", have: this.have });
+        const haveIv = this.have > 0 ? this.haveIvs.get(this.have) : undefined;
+        this.send(haveIv ? { t: "hello", have: this.have, haveIv } : { t: "hello", have: this.have });
         for (const item of this.deps.outbox.list(noteId)) this.send({ t: "ops", ...item });
         this.startHeartbeat();
       },
@@ -398,28 +453,55 @@ export class LiveNote {
       case "welcome":
         this.set({ here: m.here });
         this.welcomeHadSnapshot = m.snapshot !== null;
-        if (m.snapshot) {
+        this.repair = null;
+        if (m.reset) {
+          // The server's log isn't the one we knew (restored backup). Start the bookkeeping over, but
+          // keep the visible text: the server's content is merged in as ops, never swapped in.
+          this.have = 0;
+          this.above.clear();
+          this.haveIvs.clear();
+          this.lastSnapshotUpTo = 0;
+        }
+        if (m.seq > 0 && m.seqIv) this.haveIvs.set(m.seq, m.seqIv);
+        if (m.reset) {
+          let server = new Rga(this.replica);
+          if (m.snapshot) {
+            const payload = await unseal<SnapshotPayload>(keys.key, keys.id, "snapshot", m.snapshot);
+            server = Rga.fromState(this.replica, payload.state);
+            const ops = opsFromState(payload.state);
+            if (this.composing) this.held.push(...ops);
+            else this.applyRemote(ops);
+            this.lastSnapshotUpTo = m.snapshot.upTo;
+          }
+          this.repair = server;
+        } else if (m.snapshot) {
           await this.loadSnapshot(m.snapshot);
           this.lastSnapshotUpTo = Math.max(this.lastSnapshotUpTo, m.snapshot.upTo);
         }
         return;
       case "op": {
         const payload = await unseal<OpsPayload>(keys.key, keys.id, "ops", m);
+        if (this.repair) for (const op of payload.ops) this.repair.apply(op);
         if (this.composing) this.held.push(...payload.ops);
         else this.applyRemote(payload.ops);
+        this.haveIvs.set(m.seq, m.iv);
         this.markReceived(m.seq);
         this.maybeSnapshot();
         return;
       }
-      case "ack":
+      case "ack": {
+        const sent = this.deps.outbox.list(keys.id).find((item) => item.cid === m.cid);
+        if (sent) this.haveIvs.set(m.seq, sent.iv); // the IV we sealed it with is the server's IV
         this.deps.outbox.remove(keys.id, m.cid);
         this.markReceived(m.seq);
         this.updateUnsent();
         this.maybeSnapshot();
         return;
-      case "synced":
+      }
+      case "synced": {
         this.have = Math.max(this.have, m.seq);
         this.absorb();
+        this.finishRepair();
         await this.replayOutbox();
         if (!this.legacyChecked) {
           this.legacyChecked = true;
@@ -431,6 +513,7 @@ export class LiveNote {
         this.schedulePresence(); // let the others see where I am
         this.maybeSnapshot();
         return;
+      }
       case "here": {
         const grew = m.n > this.snapshot.here;
         this.set({ here: m.n });
@@ -539,6 +622,22 @@ export class LiveNote {
   private absorb(): void {
     for (const s of this.above) if (s <= this.have) this.above.delete(s);
     while (this.above.delete(this.have + 1)) this.have++;
+    for (const seq of this.haveIvs.keys()) if (seq < this.have) this.haveIvs.delete(seq); // only `have` and above matter
+  }
+
+  /**
+   * After a reset catch-up: the visible text now holds everything the server sent. Re-send what the
+   * server still lacks (its history was lost), in the usual batches. Other tabs repairing the same
+   * note may send some of it too; the CRDT ignores the duplicates.
+   */
+  private finishRepair(): void {
+    const server = this.repair;
+    this.repair = null;
+    if (!server) return;
+    const missing = opsServerLacks(this.rga, server);
+    if (missing.length === 0) return;
+    this.queued = [...missing, ...this.queued]; // lost history first: later edits may anchor on it
+    void this.flush();
   }
 
   /** Applies remote ops; the local selection stays on the same characters (anchors, not indices). */
@@ -603,7 +702,7 @@ export class LiveNote {
   /** Upload a snapshot, but only of state everyone already has (nothing of mine unacked, no gaps). */
   private maybeSnapshot(): void {
     const keys = this.keys;
-    if (!keys || !this.open || this.composing || this.held.length > 0) return;
+    if (!keys || !this.open || this.composing || this.held.length > 0 || this.repair) return;
     if (this.have - this.lastSnapshotUpTo < (this.deps.snapshotEvery ?? 500)) return;
     if (this.queued.length > 0 || this.sealing > 0 || this.above.size > 0) return;
     if (this.deps.outbox.list(keys.id).length > 0 || this.rga.pendingCount() > 0) return;
