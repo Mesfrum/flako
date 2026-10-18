@@ -24,12 +24,30 @@ defaults() {
   export T_ACCOUNT=test T_BUCKET=$BUCKET T_KEY=testkey T_SECRET=testsecret T_ENDPOINT=http://s3:8333
 }
 
-teardown() { $DC --profile tools down -v --remove-orphans >/dev/null 2>&1; }
+teardown() { extra_down; $DC --profile tools down -v --remove-orphans >/dev/null 2>&1; }
 
 # Fresh world: no containers, no volumes.
 reset() {
   teardown
   defaults
+}
+
+# extra_up NAME HOSTPORT: another app container from the same image, env and network as `app`,
+# for the overlap scenario. Torn down by extra_down / teardown.
+extra_up() {
+  docker rm -f "$1" >/dev/null 2>&1
+  docker run -d --name "$1" --network flako-bktest_default -p "127.0.0.1:$2:8080"     -e ADDR=:8080 -e DB_PATH=/data/notes.db -e R2_ACCOUNT_ID="$T_ACCOUNT" -e R2_BUCKET="$T_BUCKET"     -e R2_ACCESS_KEY_ID="$T_KEY" -e R2_SECRET_ACCESS_KEY="$T_SECRET" -e LITESTREAM_ENDPOINT="$T_ENDPOINT"     flako-bktest-app >/dev/null
+}
+extra_down() { docker rm -f flako-bktest-b flako-bktest-c >/dev/null 2>&1; }
+
+healthy_at() { # healthy_at PORT N
+  i=0
+  while [ "$i" -lt "$2" ]; do
+    curl -fsS -m 2 "http://127.0.0.1:$1/healthz" >/dev/null 2>&1 && return 0
+    i=$((i + 1))
+    sleep 1
+  done
+  return 1
 }
 
 AWS="aws --endpoint-url http://s3:8333"
@@ -213,6 +231,45 @@ s8b() { # S3 up: the last write before stop (no 10 s wait) is restored on next b
   expect_seq 2
 }
 
+s9() { # deploy overlap: A and B replicate to the same path at once; a third boot (C) must still restore
+  reset
+  s3_up || return 1
+  app_up # A on :18080
+  healthy 30 || return 1
+  write_op >/dev/null && write_op >/dev/null || return 1
+  sleep 12 # base: 2 ops safely in the replica
+  extra_up flako-bktest-b 18081 || return 1 # B restores A's backup, then also replicates
+  healthy_at 18081 40 || {
+    say "B not healthy"
+    return 1
+  }
+  a=0
+  b=0
+  t0=$(date +%s)
+  while [ $(($(date +%s) - t0)) -lt 30 ]; do # both write for 30 s
+    write_op >/dev/null && a=$((a + 1))
+    "$WSC" write "ws://127.0.0.1:18081/api/notes/$ID/live" >/dev/null 2>&1 && b=$((b + 1))
+    sleep 3
+  done
+  write_op >/dev/null && a=$((a + 1)) # A's very last write, right before TERM
+  $DC stop -t 30 app >/dev/null 2>&1
+  extra_up flako-bktest-c 18082 || return 1 # C restores from whatever the two writers left behind
+  healthy_at 18082 40 || {
+    say "C not healthy"
+    docker logs flako-bktest-c 2>&1 | tail -15 | sed 's/^/      | /'
+    return 1
+  }
+  restored=0
+  docker logs flako-bktest-c 2>&1 | grep -q "restored /data/notes.db from the replica" && restored=1
+  paused=0
+  docker logs flako-bktest-c 2>&1 | grep -q "BACKUPS PAUSED" && paused=1
+  cseq=$("$WSC" seq "ws://127.0.0.1:18082/api/notes/$ID/live" 2>/dev/null | sed 's/^seq //')
+  integ=$(docker exec flako-bktest-c sqlite3 /data/notes.db "PRAGMA integrity_check" 2>&1 | tr -d '[:space:]')
+  say "A wrote $a after base 2 (A total $((2 + a))); B wrote $b (B total $((2 + b))); C seq '$cseq' restored=$restored paused=$paused integrity=$integ"
+  extra_down
+  [ "$restored" = 1 ] && [ "$paused" = 0 ] && [ "$integ" = ok ]
+}
+
 # --- runner ------------------------------------------------------------------------------------
 trap teardown EXIT
 
@@ -227,7 +284,7 @@ $DC build app >/dev/null 2>&1 || {
   exit 1
 }
 
-if [ "$#" -gt 0 ]; then WANT="$*"; else WANT="1 2 3 4 5 6 7 8a 8b"; fi
+if [ "$#" -gt 0 ]; then WANT="$*"; else WANT="1 2 3 4 5 6 7 8a 8b 9"; fi
 FAILED=0
 for n in $WANT; do
   if "s$n"; then

@@ -53,8 +53,13 @@ So this project has two parts:
 - `litestream restore -if-replica-exists` exits 0 when there is no backup yet; network/permission/
   corruption errors still exit non-zero. **No built-in timeout.** (litestream.io/reference/restore)
 - `replicate -exec CMD`: Litestream exits when the child exits.
-- **Unverified:** what happens when two Litestream processes (old + new instance during a deploy)
-  replicate to the same R2 path. Must be tested (§6).
+- **Verified (scenario 9, 3 runs, Litestream v0.5.17 vs an S3-compatible stand-in for R2):** two
+  Litestream processes replicating to the same path (old instance A + new instance B that restored
+  from it, both writing for 30 s, then A stopped with SIGTERM) leave a backup that a third boot (C)
+  restores cleanly: `/healthz` healthy, `PRAGMA integrity_check` = ok, no "BACKUPS PAUSED", all 3
+  runs. The restored DB is one writer's history, not a merge: C held A's final state (13 ops) in two
+  runs and B's state (12 ops) in one; the other writer's writes made during the overlap are lost.
+  That is the accepted small data loss, so no per-boot replica path was built.
 - Server already handles SIGTERM (10 s graceful shutdown) and serves `GET /healthz`.
 
 ## 4. Part 1 — Litestream (decided)

@@ -427,3 +427,13 @@ One entry per concept, written for future-me coming back after a long break.
 - Test every failure on purpose (wrong keys, black-holed endpoint, paused S3, junk objects, `kill -9` on Litestream)
   and assert the one thing that matters: `/healthz` answers. Then mutate the code (make a restore failure `exit 1`)
   and confirm those scenarios fail - otherwise the tests might pass for the wrong reason.
+
+## Two Litestream writers during a deploy overlap
+- On Render the new instance restores and starts replicating while the old one still serves, so two Litestream
+  processes briefly write to the same replica path. Tested instead of assumed: A and B both wrote for 30 s, A got
+  SIGTERM, then a third container C restored (3 runs).
+- Result: C was always healthy with an intact DB (`integrity_check` ok). But the DB is one writer's timeline, not a
+  merge: C had A's last writes in two runs and B's in one, and lost the other writer's overlap-window writes.
+- So the failure mode is "small data loss for a few seconds of overlap", not corruption, and the existing
+  integrity_check + fail-open restore is already the right safety net. A per-boot replica path would only be worth
+  building if a restore ever failed here.
