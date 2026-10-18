@@ -1,0 +1,43 @@
+# TEST-ONLY harness stack: the real flako image pointed at a local S3-compatible server that
+# stands in for Cloudflare R2. (The file is named after MinIO, the original choice; MinIO stopped
+# publishing images to Docker Hub/Quay, so this uses SeaweedFS's S3 gateway instead.) Driven by docker/test/backup-scenarios.sh, which varies the T_* variables per
+# scenario. Never used in production.
+#
+# Host port 18080 (not 8080) so it cannot clash with a dev server; project name is set by the
+# script (-p flako-bktest) so teardown can only touch this stack.
+name: flako-bktest
+
+services:
+  s3:
+    image: chrislusf/seaweedfs
+    command: ["server", "-dir=/data", "-s3", "-s3.config=/etc/s3.json", "-master.volumeSizeLimitMB=64"]
+    volumes:
+      - ./seaweed-s3.json:/etc/s3.json:ro
+
+  # One-shot AWS CLI, used by the script to create the bucket and to sabotage objects.
+  aws:
+    image: amazon/aws-cli
+    entrypoint: ["/bin/sh"]
+    profiles: ["tools"]
+    environment:
+      AWS_ACCESS_KEY_ID: testkey
+      AWS_SECRET_ACCESS_KEY: testsecret
+      AWS_DEFAULT_REGION: us-east-1
+
+  app:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:18080:8080"
+    environment:
+      ADDR: ":8080"
+      DB_PATH: "/data/notes.db"
+      # "-" (not ":-") so a scenario can export an EMPTY value to mean "unset".
+      R2_ACCOUNT_ID: ${T_ACCOUNT-test}
+      R2_BUCKET: ${T_BUCKET-flako-test}
+      R2_ACCESS_KEY_ID: ${T_KEY-testkey}
+      R2_SECRET_ACCESS_KEY: ${T_SECRET-testsecret}
+      # Test-only override of the R2 endpoint (see docker/entrypoint.sh).
+      LITESTREAM_ENDPOINT: ${T_ENDPOINT-http://s3:8333}
+    # No volume on purpose: --force-recreate must give a brand-new empty /data, like a Render deploy.

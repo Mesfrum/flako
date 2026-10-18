@@ -394,3 +394,36 @@ One entry per concept, written for future-me coming back after a long break.
 - Cheap lookup: the server replica is indexed as sorted runs per replica id and queried by binary search, instead of a map entry per character.
 - Tests: FakeHub mirrors the Go rule and gains `rewind(n)`. Mutation checks: dropping `haveIv` fails every repair test; making the filter send everything fails the "already repaired" test; skipping the re-send fails the lost-edit tests. Re-basing via `loadSnapshot` on reset is a harmful mutation: it rebuilds as snapshot plus `history`, so text that arrived through an earlier welcome snapshot (never in `history`) vanishes (test P2/P3).
 - The repair must survive a dropped connection: after a reset the tab has `have = 0`, so its next hello is a plain `have:0` and the server can't say "reset" again. A `repairPending` flag makes every welcome behave like a reset until `finishRepair` ran. General guard: once a snapshot has replaced the CRDT, later snapshots are merged as ops, never swapped in.
+
+## Litestream: streaming the WAL
+- SQLite in WAL mode appends every committed change to a `-wal` file and only later folds it into the main file
+  (a "checkpoint"). Litestream is a second process that watches that WAL, cuts the new pages into small LTX files
+  and uploads them to S3/R2 every `sync-interval` (we use 10 s, so a crash loses at most ~10 s of writes).
+- Backup = a full snapshot (daily) + the chain of small changes after it. `litestream restore` downloads the newest
+  snapshot and replays the changes. Retention (72 h) just deletes snapshots and changes older than that.
+- Litestream does not sit inside the server: it opens the same DB file as a normal reader and takes over
+  checkpointing so no WAL page is folded away before it has been uploaded. That is why the server and Litestream can
+  be separate processes at all.
+- On SIGTERM Litestream does one last sync before exiting, so we stop the server first (no more writes) and then
+  Litestream: the final upload then contains everything the server committed.
+- v0.5 allows only one `replica:` per DB (v0.3 had a `replicas:` list), expands `${VAR}` itself, and an unset var
+  becomes an empty string. The R2 endpoint is just an S3 endpoint plus `region: auto`.
+- Testing S3 code locally: point the same image at any S3-compatible server. MinIO would be the classic choice, but
+  it no longer publishes images, so the harness uses SeaweedFS's S3 gateway; the endpoint override is a test-only env.
+
+## Fail-open startup
+- Rule: an optional feature must never be able to stop the required one. Backups are optional, the server is not.
+- So the entrypoint does not use `set -e`, never exits because of a restore, and puts hard time limits on every
+  external call (`timeout -s KILL 15` around the restore, 5 s around `integrity_check`) because a network call with no
+  timeout is how a "backup problem" turns into an outage.
+- Restore goes to a temp file next to the DB and is moved in (`mv` in one directory is atomic) only if
+  `PRAGMA integrity_check` returns `ok`; anything else (error, timeout, junk, empty bucket) logs a warning and boots
+  with an empty DB. Stale `-wal`/`-shm` files are deleted first because they belong to the old database file.
+- Process layout: the server is the main process and Litestream runs beside it, not as its parent
+  (`litestream replicate -exec` would take the server down whenever Litestream died). The script traps TERM, forwards
+  it to the server, waits, then stops Litestream with a 15 s watchdog, and exits with the server's exit code.
+- `wait` returns early when a trapped signal arrives, so it is called in a loop until the child is really gone.
+  After a child dies, `kill -0 pid` can still succeed on the unreaped zombie; `wait pid` is the reliable check.
+- Test every failure on purpose (wrong keys, black-holed endpoint, paused S3, junk objects, `kill -9` on Litestream)
+  and assert the one thing that matters: `/healthz` answers. Then mutate the code (make a restore failure `exit 1`)
+  and confirm those scenarios fail - otherwise the tests might pass for the wrong reason.

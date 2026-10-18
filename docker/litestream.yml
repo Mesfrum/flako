@@ -1,0 +1,29 @@
+# Litestream v0.5.17 config. Every key below was checked against the v0.5 docs
+# (https://litestream.io/reference/config/ and https://litestream.io/guides/s3-compatible/).
+#
+# - `${VAR}` is expanded by Litestream itself before parsing; an unset var becomes "".
+# - v0.5 allows ONE `replica:` per database (the old `replicas:` list is gone).
+# - Used only when all four R2_* vars are set (docker/entrypoint.sh decides that).
+#
+# LITESTREAM_ENDPOINT is exported by the entrypoint: it defaults to the R2 endpoint built from
+# R2_ACCOUNT_ID, and is overridable ONLY for the local test harness (docker/test/).
+
+# `snapshot.interval`: how often a full snapshot is written (restores replay snapshot + newer
+# changes). `snapshot.retention`: how long old snapshots/changes are kept before cleanup (72 h
+# = about 3 daily snapshots, which keeps the R2 bucket tiny).
+snapshot:
+  interval: 24h
+  retention: 72h
+
+dbs:
+  - path: ${DB_PATH}
+    replica:
+      type: s3
+      bucket: ${R2_BUCKET}
+      path: flako/notes.db
+      endpoint: ${LITESTREAM_ENDPOINT}
+      region: auto # R2 ignores the region but the S3 client needs one; R2 documents "auto"
+      access-key-id: ${R2_ACCESS_KEY_ID}
+      secret-access-key: ${R2_SECRET_ACCESS_KEY}
+      force-path-style: true # required for non-AWS S3 servers (R2 accepts path-style too)
+      sync-interval: 10s # default is 1s; 10s keeps worst-case PUTs ~260k/month (R2 free: 1M)
