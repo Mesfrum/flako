@@ -40,4 +40,6 @@ services:
       R2_SECRET_ACCESS_KEY: ${T_SECRET-testsecret}
       # Test-only override of the R2 endpoint (see docker/entrypoint.sh).
       LITESTREAM_ENDPOINT: ${T_ENDPOINT-http://s3:8333}
+      # Test-only: keepalive period in seconds (empty = the 12 h default).
+      FLAKO_KEEPALIVE_SECS: ${T_KEEPALIVE-}
     # No volume on purpose: --force-recreate must give a brand-new empty /data, like a Render deploy.

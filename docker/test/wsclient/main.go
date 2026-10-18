@@ -2,8 +2,10 @@
 // protocol with dummy sealed payloads (the server never decrypts), so the harness can write real
 // ops through the real server and read back how many the server holds.
 //
-//	wsclient write ws://host/api/notes/<43-char-id>/live   # append one op, print "ack <seq>"
-//	wsclient seq   ws://host/api/notes/<43-char-id>/live   # print "seq <n>" (ops stored for the note)
+//	wsclient write ws://host/api/notes/<43-char-id>/live [N [BYTES]]  # append N ops (default 1) of
+//	                                                                   # BYTES ciphertext (default 32);
+//	                                                                   # print "ack <seq>" of the last
+//	wsclient seq   ws://host/api/notes/<43-char-id>/live              # print "seq <n>" (ops stored)
 package main
 
 import (
@@ -13,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/coder/websocket"
@@ -24,11 +27,22 @@ type msg struct {
 }
 
 func main() {
-	if len(os.Args) != 3 || (os.Args[1] != "write" && os.Args[1] != "seq") {
-		fmt.Fprintln(os.Stderr, "usage: wsclient write|seq ws://.../api/notes/<id>/live")
+	if len(os.Args) < 3 || len(os.Args) > 5 || (os.Args[1] != "write" && os.Args[1] != "seq") {
+		fmt.Fprintln(os.Stderr, "usage: wsclient write|seq ws://.../api/notes/<id>/live [N [BYTES]]")
 		os.Exit(2)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	n, size := 1, 32
+	if len(os.Args) >= 4 {
+		n, _ = strconv.Atoi(os.Args[3])
+	}
+	if len(os.Args) == 5 {
+		size, _ = strconv.Atoi(os.Args[4])
+	}
+	if n < 1 || size < 16 {
+		fmt.Fprintln(os.Stderr, "N must be >= 1 and BYTES >= 16")
+		os.Exit(2)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second+time.Duration(n)*20*time.Millisecond)
 	defer cancel()
 
 	conn, _, err := websocket.Dial(ctx, os.Args[2], nil)
@@ -69,16 +83,19 @@ func main() {
 		fmt.Println("seq", welcome.Seq)
 		return
 	}
-	ct := make([]byte, 32) // >= 16 bytes (GCM tag size); content is never decrypted here
-	iv := make([]byte, 12)
-	_, _ = rand.Read(ct)
-	_, _ = rand.Read(iv)
-	send(map[string]any{
-		"t":   "ops",
-		"cid": "harness",
-		"ct":  base64.StdEncoding.EncodeToString(ct),
-		"iv":  base64.StdEncoding.EncodeToString(iv),
-	})
-	ack := next("ack")
+	var ack msg
+	for i := 0; i < n; i++ { // one op at a time: wait for each ack, like a real tab's outbox
+		ct := make([]byte, size) // >= 16 bytes (GCM tag size); content is never decrypted here
+		iv := make([]byte, 12)
+		_, _ = rand.Read(ct)
+		_, _ = rand.Read(iv)
+		send(map[string]any{
+			"t":   "ops",
+			"cid": "harness",
+			"ct":  base64.StdEncoding.EncodeToString(ct),
+			"iv":  base64.StdEncoding.EncodeToString(iv),
+		})
+		ack = next("ack")
+	}
 	fmt.Println("ack", ack.Seq)
 }

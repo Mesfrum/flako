@@ -11,6 +11,10 @@
 # `snapshot.interval`: how often a full snapshot is written (restores replay snapshot + newer
 # changes). `snapshot.retention`: how long old snapshots/changes are kept before cleanup (72 h
 # = about 3 daily snapshots, which keeps the R2 bucket tiny).
+# `shutdown-sync-timeout`: on SIGTERM Litestream retries its final upload for at most this long
+# (default 30 s). 10 s keeps it inside the entrypoint's 15 s watchdog and Render's 30 s.
+shutdown-sync-timeout: 10s
+
 snapshot:
   interval: 24h
   retention: 72h
@@ -20,7 +24,10 @@ dbs:
     replica:
       type: s3
       bucket: ${R2_BUCKET}
-      path: flako/notes.db
+      # One path PER BOOT (FLAKO_REPLICA = boot id, set by the entrypoint): during a deploy overlap
+      # the old and new instance each write their own replica, never the same files. Restore reads
+      # the newest boot's path (the entrypoint sets FLAKO_REPLICA to that id for the restore only).
+      path: flako/${FLAKO_REPLICA}/notes.db
       endpoint: ${LITESTREAM_ENDPOINT}
       region: auto # R2 ignores the region but the S3 client needs one; R2 documents "auto"
       access-key-id: ${R2_ACCESS_KEY_ID}

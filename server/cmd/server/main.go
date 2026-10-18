@@ -15,11 +15,31 @@ import (
 	"github.com/Mesfrum/flako/server/internal/config"
 	"github.com/Mesfrum/flako/server/internal/httpapi"
 	"github.com/Mesfrum/flako/server/internal/live"
+	"github.com/Mesfrum/flako/server/internal/replicas"
 	"github.com/Mesfrum/flako/server/internal/store"
 	"github.com/Mesfrum/flako/server/internal/web"
 )
 
 func main() {
+	// `flako-server newest-replica`: a helper for docker/entrypoint.sh (see internal/replicas).
+	// Prints the newest boot id with a replica in the R2 bucket ("" if none); exit 1 on any error.
+	if len(os.Args) == 2 && os.Args[1] == "newest-replica" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		id, err := replicas.Newest(ctx, http.DefaultClient, replicas.Config{
+			Endpoint:  os.Getenv("LITESTREAM_ENDPOINT"),
+			Bucket:    os.Getenv("R2_BUCKET"),
+			AccessKey: os.Getenv("R2_ACCESS_KEY_ID"),
+			SecretKey: os.Getenv("R2_SECRET_ACCESS_KEY"),
+			Region:    "auto",
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "newest-replica:", err)
+			os.Exit(1)
+		}
+		fmt.Println(id)
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
