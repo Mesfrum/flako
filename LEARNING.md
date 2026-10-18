@@ -348,3 +348,13 @@ One entry per concept, written for future-me coming back after a long break.
   produce byte-identical ops and the CRDT keeps one copy (mutation-verified: random ids → "legacy textlegacy text").
 - The same ids pin "old character 6" forever, so unsent Phase 1 text can be merged precisely after later edits.
 - Big pastes/imports are split into pieces of ≤ 16 Ki units and batches of ≤ 192 KiB JSON, under the 256 KiB frame limit.
+
+## Testing two users at once: browser contexts
+- A Playwright *browser context* is a fresh profile (own cookies, localStorage, IndexedDB), so two contexts on
+  the same URL behave like two people: separate outboxes, separate replica ids, real WebSockets to a real server.
+- Concurrency is just `Promise.all([A.keyboard.type(...), B.keyboard.type(...)])`; then wait until both
+  textareas are equal (convergence) and assert on the exact merged text.
+- Measure "feels instant" with the Event Timing API (`PerformanceObserver({ type: "event" })`) and "froze" with
+  the longest gap between `requestAnimationFrame` callbacks.
+- Lesson: always run a control. A 200 KB `keyboard.insertText` froze the tab for 87 s — but it is just as slow
+  on a bare `<textarea>` with no app (quadratic in Chrome's insertText path). A real Ctrl+V took 0.6–1.6 s.
