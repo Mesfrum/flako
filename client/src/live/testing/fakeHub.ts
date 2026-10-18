@@ -24,6 +24,11 @@ export class FakeHub {
   welcomes: { reset: boolean; seq: number }[] = [];
   /** true → welcome and ops are sent but `synced` is not, so a test can cut the connection mid-catch-up. */
   withholdSynced = false;
+  /**
+   * Set → on the next hello, this sealed op is appended (seq = latest + 1) and broadcast BEFORE the
+   * welcome (which still says seq = latest): the Go hub's writer can deliver a queued broadcast first.
+   */
+  injectBeforeWelcome: { ct: string; iv: string } | null = null;
   private silent = false;
   private nextId = 0;
   private live = new Set<FakePeer>();
@@ -89,7 +94,14 @@ export class FakeHub {
             have = 0;
           }
         }
-        this.welcomes.push({ reset, seq: this.log.length });
+        if (this.injectBeforeWelcome) {
+          const op = { seq: latest + 1, ...this.injectBeforeWelcome };
+          this.injectBeforeWelcome = null;
+          this.log.push(op);
+          this.sendTo(p, { t: "op", ...op });
+          this.broadcast(p, { t: "op", ...op });
+        }
+        this.welcomes.push({ reset, seq: latest });
         const snap = have === 0 ? this.snapshots[this.snapshots.length - 1] ?? null : null;
         const seqIv = latest > 0 ? this.log[latest - 1].iv : "";
         this.sendTo(p, { t: "welcome", seq: latest, here: room.length, snapshot: snap, reset, seqIv });

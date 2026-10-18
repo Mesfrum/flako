@@ -22,8 +22,9 @@ export type ServerMsg =
       seq: number;
       here: number;
       snapshot: ({ upTo: number } & SealedWire) | null;
-      reset: boolean; // the server's log is not the one this client knew: it caught us up from zero
-      seqIv: string; // IV of the server's op at `seq` ("" when seq is 0)
+      // Optional: a server from before this field (during a deploy overlap or a rollback) omits both.
+      reset?: boolean; // the server's log is not the one this client knew: it caught us up from zero
+      seqIv?: string; // IV of the server's op at `seq` ("" when seq is 0)
     }
   | ({ t: "op"; seq: number } & SealedWire)
   | { t: "ack"; cid: string; seq: number }

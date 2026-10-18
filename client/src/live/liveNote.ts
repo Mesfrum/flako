@@ -175,14 +175,58 @@ function holdsAll(index: RunIndex, r: string, c: number, n: number, stamp?: stri
   return true;
 }
 
-/** The ops the server's replica lacks, taken from my state: a whole insert unless it holds every char. */
+/**
+ * The ops the server's replica lacks, taken from my state. An insert the server holds in part is cut
+ * down to its missing stretches, each anchored after the char before it (`after = {c - 1, r}`): a tab
+ * running older code drops an insert whose first id it already knows, so never send one.
+ */
 function opsServerLacks(mine: Rga, server: Rga): Op[] {
   const index = indexState(server.toState());
-  return opsFromState(mine.toState()).filter((op) => {
-    if (op.k === "ins") return !holdsAll(index, op.id.r, op.id.c, op.text.length);
+  const out: Op[] = [];
+  for (const op of opsFromState(mine.toState())) {
+    if (op.k === "ins") {
+      const n = op.text.length;
+      if (holdsAll(index, op.id.r, op.id.c, n)) continue;
+      if (!holdsAll(index, op.id.r, op.id.c, 1) && !holdsAny(index, op.id.r, op.id.c, n)) {
+        out.push(op); // none of it is there: the whole run, as is
+        continue;
+      }
+      for (let i = 0; i < n; ) {
+        if (holdsAll(index, op.id.r, op.id.c + i, 1)) {
+          i++;
+          continue;
+        }
+        let j = i + 1;
+        while (j < n && !holdsAll(index, op.id.r, op.id.c + j, 1)) j++;
+        const after = i === 0 ? op.after : { c: op.id.c + i - 1, r: op.id.r };
+        out.push({ k: "ins", id: { c: op.id.c + i, r: op.id.r }, after, text: op.text.slice(i, j) });
+        i = j;
+      }
+      continue;
+    }
     const stamp = `${op.k === "del" ? 1 : 0}:${op.at.c}:${op.at.r}`;
-    return !op.ranges.every((rg) => holdsAll(index, rg.r, rg.c, rg.n, stamp));
-  });
+    if (!op.ranges.every((rg) => holdsAll(index, rg.r, rg.c, rg.n, stamp))) out.push(op);
+  }
+  return out;
+}
+
+/** True when any id in (r, c .. c+n-1) is held. */
+function holdsAny(index: RunIndex, r: string, c: number, n: number): boolean {
+  const runs = index.get(r);
+  if (!runs) return false;
+  const end = c + n;
+  // Runs are sorted and disjoint: only the last run starting before `end` can reach into [c, end).
+  let lo = 0;
+  let hi = runs.length - 1;
+  let hit = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (runs[mid].c < end) {
+      hit = mid;
+      lo = mid + 1;
+    } else hi = mid - 1;
+  }
+  return hit >= 0 && runs[hit].c + runs[hit].n > c;
 }
 
 function randomReplica(): string {
@@ -249,6 +293,10 @@ export class LiveNote {
   private repair: Rga | null = null;
   private repairPending = false; // a reset happened and finishRepair hasn't run yet; survives reconnects
   private rebased = false; // a snapshot replaced the CRDT once: never replace it again (would drop text)
+  // Ops that arrived on the current socket before its welcome (the hub may deliver a broadcast first).
+  // Their seqs are newer than welcome.seq, so a reset must not forget them.
+  private welcomed = false;
+  private preWelcome = new Map<number, { iv: string; ops: Op[] }>();
 
   constructor(name: string, deps: LiveNoteDeps) {
     this.name = name;
@@ -383,6 +431,8 @@ export class LiveNote {
       onOpen: () => {
         if (!current()) return;
         this.open = true;
+        this.welcomed = false;
+        this.preWelcome.clear();
         const haveIv = this.have > 0 ? this.haveIvs.get(this.have) : undefined;
         this.send(haveIv ? { t: "hello", have: this.have, haveIv } : { t: "hello", have: this.have });
         for (const item of this.deps.outbox.list(noteId)) this.send({ t: "ops", ...item });
@@ -467,19 +517,29 @@ export class LiveNote {
           this.above.clear();
           this.haveIvs.clear();
           this.lastSnapshotUpTo = 0;
+          // ...except ops this socket already delivered: they are the NEW log's ops past welcome.seq.
+          for (const [seq, { iv }] of this.preWelcome) {
+            if (seq <= m.seq) continue;
+            this.above.add(seq);
+            this.haveIvs.set(seq, iv);
+          }
         }
+        this.welcomed = true;
         if (m.seq > 0 && m.seqIv) this.haveIvs.set(m.seq, m.seqIv);
         if (this.repairPending) {
           this.repair = m.snapshot ? await this.mergeSnapshot(m.snapshot) : new Rga(this.replica);
+          for (const [seq, { ops }] of this.preWelcome) if (seq > m.seq) for (const op of ops) this.repair.apply(op);
         } else if (m.snapshot) {
           if (this.rebased) await this.mergeSnapshot(m.snapshot);
           else await this.loadSnapshot(m.snapshot);
           this.lastSnapshotUpTo = Math.max(this.lastSnapshotUpTo, m.snapshot.upTo);
         }
+        this.preWelcome.clear();
         return;
       case "op": {
         const payload = await unseal<OpsPayload>(keys.key, keys.id, "ops", m);
         if (this.repair) for (const op of payload.ops) this.repair.apply(op);
+        if (!this.welcomed) this.preWelcome.set(m.seq, { iv: m.iv, ops: payload.ops });
         if (this.composing) this.held.push(...payload.ops);
         else this.applyRemote(payload.ops);
         this.haveIvs.set(m.seq, m.iv);

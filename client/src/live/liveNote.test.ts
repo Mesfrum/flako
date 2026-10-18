@@ -6,6 +6,9 @@ import { createPendingStore, memoryStorage, type KeyValueStorage } from "../note
 import { LiveNote, type LiveNoteDeps } from "./liveNote";
 import { createOutbox } from "./outbox";
 import { FakeHub } from "./testing/fakeHub";
+import type { Op } from "./crdt/rga";
+import type { OpsPayload } from "./protocol";
+import { unseal } from "./sealed";
 
 const ID = "a".repeat(43);
 let key: CryptoKey;
@@ -598,6 +601,54 @@ describe("LiveNote: repairing after the server lost history", () => {
     const c = engine(hub);
     await ready(c);
     await until(() => c.getSnapshot().text === "base+more", "newcomer sees each edit once");
+  });
+
+  it("M1: a broadcast delivered before a reset welcome still counts as received", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub);
+    await ready(a);
+    for (const t of ["a", "ab", "abc"]) await typeAcked(a, hub, t);
+    const third = hub.log[2];
+    hub.rewind(1); // the server kept only op 1
+    hub.injectBeforeWelcome = { ct: third.ct, iv: third.iv }; // someone's op lands as seq 2, before A's welcome
+    await advance(1100);
+    await until(() => hub.welcomes.length === 2 && hub.welcomes[1].reset, "A reconnected with a reset");
+    await until(() => a.getSnapshot().conn === "live" && a.getSnapshot().unsent === 0, "repaired and acked");
+    await advance(300);
+    const stored = hub.log.length;
+    hub.dropAll();
+    await advance(1100);
+    await until(() => hub.welcomes.length === 3 && a.getSnapshot().conn === "live", "reconnected again");
+    // A saw every seq up to the end of the log, including seq 2 that came before its welcome.
+    expect(hub.helloMsgs[2].have).toBe(stored);
+    expect(hub.welcomes[2].reset).toBe(false);
+    expect(a.getSnapshot().text).toBe("abc");
+  });
+
+  it("M2: a run the server holds in part is re-sent only from its missing stretch", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub);
+    await ready(a);
+    for (const t of ["h", "he", "hel", "hell", "hello"]) await typeAcked(a, hub, t);
+    hub.rewind(2); // the server kept "he": the first two chars of what A now holds as one run
+    await advance(1100);
+    await until(() => a.getSnapshot().conn === "live" && a.getSnapshot().unsent === 0 && hub.log.length > 2, "repaired");
+    await advance(300);
+    const held = new Set<string>(); // ids the server still had before the repair
+    const resent: Op[] = [];
+    for (const [i, entry] of hub.log.entries()) {
+      const p = await unseal<OpsPayload>(key, ID, "ops", entry);
+      if (i < 2) {
+        for (const op of p.ops) if (op.k === "ins") for (let k = 0; k < op.text.length; k++) held.add(`${op.id.r}:${op.id.c + k}`);
+      } else resent.push(...p.ops);
+    }
+    const inserts = resent.filter((op) => op.k === "ins");
+    expect(inserts.length).toBeGreaterThan(0);
+    // A client from before this branch drops an insert whose first id it knows; so never send one.
+    for (const op of inserts) expect(held.has(`${op.id.r}:${op.id.c}`)).toBe(false);
+    const c = engine(hub);
+    await ready(c);
+    await until(() => c.getSnapshot().text === "hello", "newcomer converges");
   });
 
   it("a reset arriving mid-composition changes nothing until it ends", async () => {
