@@ -369,3 +369,14 @@ One entry per concept, written for future-me coming back after a long break.
   welcome was already handed to the writer, so this fresh count is the last word each peer hears.
 - Test: loop many rooms with peers joining together and assert the last count each peer saw equals the true size.
   Keep every connection open until all peers finish reading, or an early close legitimately changes the counts.
+
+## Detecting a rewound log with an op fingerprint
+- If the server's database is restored from an older backup, its log can be shorter (or different) than what a
+  reconnecting tab already saw. A bare sequence number can't tell: `have = 5` against a log that now holds 7
+  *different* ops looks normal, and the tab would silently merge two histories.
+- Every op carries a random 12-byte IV, so the IV of the op at seq `have` is a cheap fingerprint of "this exact
+  history up to here". The tab sends it as `haveIv`; the server looks up its own op at `have` and compares.
+- Missing op, wrong seq or different IV means the histories diverged: the server replies `reset: true` and catches
+  the tab up from zero (snapshot path), as for a fresh tab. A hello without `haveIv` keeps the old behaviour.
+- The welcome also carries `seqIv` (IV of the server's latest op) so the client can remember a fingerprint to send next time.
+- Mutation check: comparing only seq (ignoring IV) makes the "different IV" tests fail, proving the IV is what matters.

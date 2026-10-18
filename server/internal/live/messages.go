@@ -7,10 +7,12 @@ package live
 type inMsg struct {
 	T    string `json:"t"`
 	Have int64  `json:"have"`
-	Cid  string `json:"cid"`
-	Ct   string `json:"ct"`
-	IV   string `json:"iv"`
-	UpTo int64  `json:"upTo"`
+	// HaveIV (hello only, may be empty) is the IV of the client's op at seq Have.
+	HaveIV string `json:"haveIv"`
+	Cid    string `json:"cid"`
+	Ct     string `json:"ct"`
+	IV     string `json:"iv"`
+	UpTo   int64  `json:"upTo"`
 }
 
 type sealedSnapshot struct {
@@ -24,6 +26,8 @@ type welcomeMsg struct {
 	Seq      int64           `json:"seq"`
 	Here     int             `json:"here"`
 	Snapshot *sealedSnapshot `json:"snapshot"` // null when not sent
+	Reset    bool            `json:"reset"`    // the client's history is not ours (log rewound): discard it
+	SeqIV    string          `json:"seqIv"`    // IV of our op at Seq (std base64); "" when Seq is 0
 }
 
 type opMsg struct {

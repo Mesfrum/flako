@@ -119,7 +119,7 @@ func (h *Hub) serve(ctx context.Context, cancel context.CancelFunc, conn *websoc
 	go h.writer(ctx, cancel, p)
 	go h.pinger(ctx, cancel, conn)
 
-	if err := h.catchUp(ctx, id, p, hello.Have, here); err != nil {
+	if err := h.catchUp(ctx, id, p, hello.Have, hello.HaveIV, here); err != nil {
 		h.fail(conn, "catch-up", err)
 		return
 	}
@@ -174,12 +174,34 @@ func (h *Hub) serve(ctx context.Context, cancel context.CancelFunc, conn *websoc
 }
 
 // catchUp sends welcome, every op the client is missing up to welcome.seq, then synced.
-func (h *Hub) catchUp(ctx context.Context, id string, p *peer, have int64, here int) error {
+func (h *Hub) catchUp(ctx context.Context, id string, p *peer, have int64, haveIV string, here int) error {
 	latest, err := h.log.LatestSeq(ctx, id)
 	if err != nil {
 		return err
 	}
 	welcome := welcomeMsg{T: "welcome", Seq: latest, Here: here}
+	if latest > 0 {
+		last, err := h.log.OpsAfter(ctx, id, latest-1, 1)
+		if err != nil {
+			return err
+		}
+		if len(last) == 1 && last[0].Seq == latest {
+			welcome.SeqIV = base64.StdEncoding.EncodeToString(last[0].IV)
+		}
+	}
+	// A restored/rewound database can hold fewer (or different) ops than the client has seen. Every
+	// op carries a random IV, so the IV of the op at `have` fingerprints the history: if it is
+	// missing or differs, the client's history is not ours and it must start over from zero.
+	if have > 0 && haveIV != "" {
+		ops, err := h.log.OpsAfter(ctx, id, have-1, 1)
+		if err != nil {
+			return err
+		}
+		if len(ops) != 1 || ops[0].Seq != have || base64.StdEncoding.EncodeToString(ops[0].IV) != haveIV {
+			welcome.Reset = true
+			have = 0
+		}
+	}
 	from := have
 	if have == 0 {
 		snap, err := h.log.LatestSnapshot(ctx, id)
