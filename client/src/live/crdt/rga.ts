@@ -211,7 +211,27 @@ export class Rga {
   }
 
   private integrateInsert(op: Extract<Op, { k: "ins" }>): boolean {
-    if (op.text.length === 0 || this.byId.has(op.id.r, op.id.c)) return false; // idempotent
+    if (op.text.length === 0) return false;
+    // Idempotent, also for partial overlap: a replica may already hold some chars of this run (it got
+    // them from smaller ops; `opsFromState` re-sends merged runs). Integrate only the missing stretches.
+    let known = 0;
+    for (let i = 0; i < op.text.length; i++) if (this.byId.has(op.id.r, op.id.c + i)) known++;
+    if (known === op.text.length) return false;
+    if (known > 0) {
+      let changed = false;
+      for (let i = 0; i < op.text.length; ) {
+        if (this.byId.has(op.id.r, op.id.c + i)) {
+          i++;
+          continue;
+        }
+        let j = i;
+        while (j < op.text.length && !this.byId.has(op.id.r, op.id.c + j)) j++;
+        const after = i === 0 ? op.after : { c: op.id.c + i - 1, r: op.id.r };
+        changed = this.integrateInsert({ k: "ins", id: { c: op.id.c + i, r: op.id.r }, after, text: op.text.slice(i, j) }) || changed;
+        i = j;
+      }
+      return changed;
+    }
     this.clock = Math.max(this.clock, op.id.c + op.text.length - 1);
 
     // Position just after `after` (or the document start)…
@@ -387,6 +407,30 @@ export class Rga {
     rga.cachedText = null;
     return rga;
   }
+}
+
+/**
+ * Turns a snapshot back into ops (used to re-send history a server lost). Inserts come in document
+ * order, each run anchored on the element just before it (tombstones included), then every stamped
+ * run gets its del/undel. Applying these to any replica holding a causally-closed subset of the
+ * state's ops makes it equal to the state; applying them to a full replica changes nothing.
+ */
+export function opsFromState(state: RgaState): Op[] {
+  const inserts: Op[] = [];
+  const stamps: Op[] = [];
+  let prev: ElemId | null = null;
+  for (const entry of state.runs) {
+    const r = state.reps[entry[0] as number];
+    const c = entry[1] as number;
+    const text = entry[2] as string;
+    inserts.push({ k: "ins", id: { c, r }, after: prev, text });
+    prev = { c: c + text.length - 1, r };
+    if (entry.length > 3) {
+      const at = { c: entry[4] as number, r: state.reps[entry[5] as number] };
+      stamps.push({ k: entry[3] === 1 ? "del" : "undel", at, ranges: [{ r, c, n: text.length }] });
+    }
+  }
+  return [...inserts, ...stamps];
 }
 
 function chunkText(chunk: Chunk): string {
