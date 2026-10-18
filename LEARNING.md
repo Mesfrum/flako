@@ -428,12 +428,38 @@ One entry per concept, written for future-me coming back after a long break.
   and assert the one thing that matters: `/healthz` answers. Then mutate the code (make a restore failure `exit 1`)
   and confirm those scenarios fail - otherwise the tests might pass for the wrong reason.
 
-## Two Litestream writers during a deploy overlap
-- On Render the new instance restores and starts replicating while the old one still serves, so two Litestream
-  processes briefly write to the same replica path. Tested instead of assumed: A and B both wrote for 30 s, A got
-  SIGTERM, then a third container C restored (3 runs).
-- Result: C was always healthy with an intact DB (`integrity_check` ok). But the DB is one writer's timeline, not a
-  merge: C had A's last writes in two runs and B's in one, and lost the other writer's overlap-window writes.
-- So the failure mode is "small data loss for a few seconds of overlap", not corruption, and the existing
-  integrity_check + fail-open restore is already the right safety net. A per-boot replica path would only be worth
-  building if a restore ever failed here.
+## Two Litestream writers during a deploy overlap — a correction
+- Correction: an earlier version of this entry said a shared replica path was fine ("small data loss for a few
+  seconds of overlap", "3 runs"). That was based on scenario 9 (4 runs, SeaweedFS standing in for R2, not R2), which
+  restored C right after A stopped, on a tiny DB, while B was still running: it could not see the real hazard.
+- What the Litestream v0.5.17 source says: `Replica.syncOnce` works out the replica's position once (`calcPos` = the
+  highest L0 transaction id already in the bucket) and then uploads L0 files named by transaction id, with no check
+  that the bucket's files came from *this* database and no second-writer detection. The files carry
+  `HeaderFlagNoChecksum`, so restore cannot notice a broken chain either, and compaction lists source files in the
+  bucket but prefers a same-named local file. Two writers therefore upload same-named files with different contents,
+  and which one a restore applies is a matter of timing. A new scenario 9b (B keeps writing ~370 1 KB ops after the
+  overlap, then C restores) happened to pass 4/4 on the shared path, but that is luck, not a guarantee.
+- Fix: one replica path per boot, `flako/<boot id>/notes.db` (boot id = UTC timestamp + random suffix, so names sort
+  by boot time); a boot restores from the newest path and never writes into another's. The losing writer is now
+  always the OLD instance, and it loses its whole overlap window (everything it wrote after B restored), not "a few
+  seconds"; open tabs re-send that. Finding "the newest path" needs a bucket listing: a tiny stdlib-only S3
+  ListObjectsV2 client with a hand-written AWS SigV4 signer (checked against AWS's documented example signature).
+- Side effect to remember: with per-boot paths, old paths pile up, so the bucket needs a lifecycle rule (delete after
+  7 days). And Litestream only writes a new snapshot when the DB changed, so an idle instance's newest snapshot would
+  age past that rule; a 12 h keepalive write keeps it fresh.
+
+## Supervising a sidecar from a shell script
+- Litestream runs beside the server, so if it dies nothing notices. A background shell function loops: start
+  `litestream replicate &`, `wait` for it, log, sleep with exponential backoff (5 s doubling to a 60 s cap, reset
+  after a healthy 5 min run), start again. It never touches the server, so a crashing sidecar can't take the app down.
+- `wait` returns early when a trapped signal arrives, so "wait until it really exited" is a loop of `wait` + `kill -0`.
+  On TERM the trap only sets a flag and forwards TERM to the child; the loop then sees the flag and stops restarting.
+- A marker file (`/data/.restore-failed`) carries a decision across restarts on a persistent disk: "this local DB is
+  not the backup, don't replicate it". State that must survive a restart goes on disk, not in a variable.
+
+## Messages that arrive before the welcome
+- The hub starts a peer's writer before it sends the welcome, so a broadcast op from someone else can reach a tab
+  before its own welcome. On a normal reconnect that's harmless (it fills a gap above `have`). On a reset it was
+  checked against the OLD `have` and then forgotten, leaving a permanent gap: `have` never advanced again that
+  session. Fix: remember what this socket delivered before its welcome and keep the seqs newer than welcome.seq.
+- General lesson: when a protocol has a "start over" message, anything that raced ahead of it belongs to the new era.

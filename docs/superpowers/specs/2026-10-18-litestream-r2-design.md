@@ -53,13 +53,16 @@ So this project has two parts:
 - `litestream restore -if-replica-exists` exits 0 when there is no backup yet; network/permission/
   corruption errors still exit non-zero. **No built-in timeout.** (litestream.io/reference/restore)
 - `replicate -exec CMD`: Litestream exits when the child exits.
-- **Verified (scenario 9, 3 runs, Litestream v0.5.17 vs an S3-compatible stand-in for R2):** two
-  Litestream processes replicating to the same path (old instance A + new instance B that restored
-  from it, both writing for 30 s, then A stopped with SIGTERM) leave a backup that a third boot (C)
-  restores cleanly: `/healthz` healthy, `PRAGMA integrity_check` = ok, no "BACKUPS PAUSED", all 3
-  runs. The restored DB is one writer's history, not a merge: C held A's final state (13 ops) in two
-  runs and B's state (12 ops) in one; the other writer's writes made during the overlap are lost.
-  That is the accepted small data loss, so no per-boot replica path was built.
+- **Two writers (corrected 2026-10-19).** Scenario 9 (4 runs, Litestream v0.5.17 vs SeaweedFS standing in for
+  R2, not R2 itself) restored a healthy, integrity-ok DB each time, holding one writer's history. But it restored
+  right after A stopped, on a tiny DB. The v0.5.17 source shows the real hazard: `Replica.syncOnce` computes its
+  position once (`calcPos` = highest L0 txid in the bucket) and uploads L0 files named by txid with no divergence
+  or second-writer check; LTX files carry `HeaderFlagNoChecksum`; compaction lists files in the bucket but prefers
+  same-named local ones. Two writers on one path upload same-named files from two databases, and the restore's
+  outcome depends on timing. Scenario 9b (B writes ~370 1 KB ops after the overlap, then C restores) passed 4/4 on
+  the shared path anyway, but the source makes that luck. So the gated per-boot fallback **was built**: each boot
+  replicates to `flako/<boot id>/notes.db` and restores the newest. The losing writer is always the old instance,
+  and it loses its whole overlap window (everything written after the new instance restored); open tabs re-send it.
 - Server already handles SIGTERM (10 s graceful shutdown) and serves `GET /healthz`.
 
 ## 4. Part 1 — Litestream (decided)
