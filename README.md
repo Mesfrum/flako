@@ -33,6 +33,8 @@ cd server && go build -o flako ./cmd/server
 
 Env vars (optional): `ADDR` (default `:8080`), `DB_PATH` (default `./data/notes.db`).
 
+In the Docker image, notes are continuously backed up to Cloudflare R2 as ciphertext (Litestream; set the four `R2_*` vars, see `DEPLOY.md`).
+
 ## Security model, honestly
 
 - Anyone who knows (or guesses) a note's name can read and edit it. Short names are weak.

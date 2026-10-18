@@ -6,7 +6,9 @@ stores only ciphertext under a hash of the name. Phase 2 adds live collaboration
 over WebSockets, remote cursors, offline merge).
 
 ## Branches
-- `master` — deployed (Oracle VPS via Docker). **Never merge into it; the owner does cutovers.**
+- `master` — deployed: Render free tier (Docker, auto-deploys on push) behind Cloudflare at flako.in,
+  UptimeRobot keeps it warm; the Oracle VPS + Caddy compose path is the documented alternative.
+  **Never merge into it; the owner does cutovers.**
 - `phase2-live` — current work (live collaboration). `archive/phase1` — preserved pre-live version.
 
 ## Commands
@@ -18,6 +20,7 @@ cd client && npm test                     # vitest, node env
 cd client && npx tsc -b && npm run lint
 cd client && npm run build                # outputs into server/internal/web/dist (embedded in Go binary)
 DOMAIN=localhost docker compose up -d --build   # full stack with Caddy HTTPS; see DEPLOY.md
+sh docker/test/backup-scenarios.sh        # Litestream/R2 fail-open scenarios 1-9 vs SeaweedFS; ~10+ min, needs Docker
 ```
 
 ## Layout
@@ -28,6 +31,8 @@ DOMAIN=localhost docker compose up -d --build   # full stack with Caddy HTTPS; s
 - `client/src/components/` — `LiveTextarea` (controlled textarea) + `RemoteCursors` (overlay).
 - `server/internal/live/` — WebSocket hub (rooms, back-pressure, close codes). `store/` — notes + op log
   (memory and SQLite impls share contract tests; migrations in `store/migrations/`).
+- `docker/` — `entrypoint.sh` (restore → server → Litestream beside it) + `litestream.yml` (backups to R2,
+  enabled only when all four `R2_*` vars are set); `docker/test/` is the backup harness.
 - `docs/superpowers/specs|plans/` — approved designs and implementation plans. `LEARNING.md` — learning log.
 
 ## Working rules
@@ -50,4 +55,9 @@ DOMAIN=localhost docker compose up -d --build   # full stack with Caddy HTTPS; s
 - Async tests: wait for a condition (op stored, outbox entry present), never a fixed number of
   ticks — every flaky test so far was a race of that kind.
 - Windows dev box: long/backtick-heavy shell heredocs break; write files with the Write tool.
+- `docker/entrypoint.sh` is fail-open: nothing backup-related may stop or delay-forever the server (no
+  `set -e`; failed restore → empty DB and replication paused for that boot). `*.sh` must stay LF
+  (`.gitattributes`), or the container dies with `exec format error`.
+- Server lost history (fresh deploy, older restore): clients detect it via the `{have, haveIv}` reset
+  protocol (op IV fingerprint) and re-send what's missing; don't weaken that check.
 - Phase 1 PUT endpoint now returns 410; notes are written only through the live op log.
