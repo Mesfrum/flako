@@ -619,6 +619,87 @@ describe("LiveNote: repairing after the server lost history", () => {
     expect(sorted(a.getSnapshot().text)).toBe(sorted("baseXYZ"));
   });
 
+  /** Lets the engine handle everything the hub sent (it withholds `synced`), then cuts the connection. */
+  async function interruptCatchUp(hub: FakeHub) {
+    await advance(100);
+    hub.withholdSynced = false;
+    hub.dropAll();
+  }
+
+  /** A types "A".."ABCD" with snapshots after every edit; waits until the hub holds snapshots at 2 and 4. */
+  async function snapshottedABCD(hub: FakeHub) {
+    const a = engine(hub, memoryStorage(), { snapshotEvery: 1 });
+    await ready(a);
+    await typeAcked(a, hub, "A");
+    await typeAcked(a, hub, "AB");
+    await until(() => hub.snapshots.some((x) => x.upTo === 2), "snapshot at 2");
+    await typeAcked(a, hub, "ABC");
+    await typeAcked(a, hub, "ABCD");
+    await until(() => hub.snapshots.some((x) => x.upTo === 4), "snapshot at 4");
+    return a;
+  }
+
+  it("P1: a connection cut after the reset welcome still repairs the server", async () => {
+    const hub = new FakeHub();
+    const a = engine(hub);
+    await ready(a);
+    await typeAcked(a, hub, "hello");
+    hub.withholdSynced = true;
+    hub.rewind(0);
+    await advance(1100); // reconnect; reset welcome arrives, synced does not
+    await until(() => hub.welcomes.length === 2, "reset welcome sent");
+    await interruptCatchUp(hub);
+    await advance(2100);
+    await until(() => hub.log.length >= 1 && a.getSnapshot().conn === "live", "repaired after the second connect");
+    expect(a.getSnapshot().text).toBe("hello");
+    const c = engine(hub);
+    await ready(c);
+    await until(() => c.getSnapshot().text === "hello", "newcomer sees the repaired note");
+  });
+
+  it("P2: text that came from a welcome snapshot survives a reset with an older snapshot", async () => {
+    const hub = new FakeHub();
+    const a = await snapshottedABCD(hub);
+    const b = engine(hub);
+    await ready(b);
+    await until(() => b.getSnapshot().text === "ABCD", "B loaded the snapshot");
+    a.dispose();
+    const seen = new Set<string>();
+    b.subscribe(() => seen.add(b.getSnapshot().text));
+    hub.rewind(2); // leaves the snapshot at 2 ("AB") and two ops
+    await advance(1100);
+    await until(() => hub.log.length > 2 && b.getSnapshot().conn === "live", "B repaired the server");
+    expect(b.getSnapshot().text).toBe("ABCD");
+    expect([...seen]).not.toContain("AB");
+    const c = engine(hub);
+    await ready(c);
+    await until(() => c.getSnapshot().text === "ABCD", "newcomer converges");
+  });
+
+  it("P3: same, with the connection cut after the reset welcome", async () => {
+    const hub = new FakeHub();
+    const a = await snapshottedABCD(hub);
+    const b = engine(hub);
+    await ready(b);
+    await until(() => b.getSnapshot().text === "ABCD", "B loaded the snapshot");
+    a.dispose();
+    const seen = new Set<string>();
+    b.subscribe(() => seen.add(b.getSnapshot().text));
+    hub.withholdSynced = true;
+    const welcomes = hub.welcomes.length;
+    hub.rewind(2);
+    await advance(1100);
+    await until(() => hub.welcomes.length === welcomes + 1, "reset welcome sent");
+    await interruptCatchUp(hub);
+    await advance(2100);
+    await until(() => hub.log.length > 2 && b.getSnapshot().conn === "live", "B repaired the server");
+    expect(b.getSnapshot().text).toBe("ABCD");
+    expect([...seen]).not.toContain("AB");
+    const c = engine(hub);
+    await ready(c);
+    await until(() => c.getSnapshot().text === "ABCD", "newcomer converges");
+  });
+
   it("a ~900 KiB note is repaired in frames under the limit", async () => {
     const hub = new FakeHub();
     const a = engine(hub);

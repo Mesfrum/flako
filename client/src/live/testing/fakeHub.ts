@@ -22,6 +22,8 @@ export class FakeHub {
   /** Every hello in full, and the `reset` flag of every welcome sent. */
   helloMsgs: { have: number; haveIv?: string }[] = [];
   welcomes: { reset: boolean }[] = [];
+  /** true → welcome and ops are sent but `synced` is not, so a test can cut the connection mid-catch-up. */
+  withholdSynced = false;
   private silent = false;
   private nextId = 0;
   private live = new Set<FakePeer>();
@@ -93,7 +95,7 @@ export class FakeHub {
         this.sendTo(p, { t: "welcome", seq: latest, here: room.length, snapshot: snap, reset, seqIv });
         const from = Math.max(have, snap?.upTo ?? 0);
         for (const op of this.log.slice(from, latest)) this.sendTo(p, { t: "op", ...op });
-        this.sendTo(p, { t: "synced", seq: latest });
+        if (!this.withholdSynced) this.sendTo(p, { t: "synced", seq: latest });
         this.broadcast(p, { t: "here", n: room.length });
         return;
       }

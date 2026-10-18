@@ -247,6 +247,8 @@ export class LiveNote {
   private haveIvs = new Map<number, string>();
   // While catching up after a reset: what the server holds, to re-send only what it lacks at `synced`.
   private repair: Rga | null = null;
+  private repairPending = false; // a reset happened and finishRepair hasn't run yet; survives reconnects
+  private rebased = false; // a snapshot replaced the CRDT once: never replace it again (would drop text)
 
   constructor(name: string, deps: LiveNoteDeps) {
     this.name = name;
@@ -454,7 +456,11 @@ export class LiveNote {
         this.set({ here: m.here });
         this.welcomeHadSnapshot = m.snapshot !== null;
         this.repair = null;
-        if (m.reset) {
+        // A reset starts a repair that must survive reconnects: if the socket drops before `synced`, the
+        // next hello is a plain have:0 and the server cannot say "reset" again. So until finishRepair
+        // completes, every welcome is treated like a reset.
+        if (m.reset) this.repairPending = true;
+        if (this.repairPending) {
           // The server's log isn't the one we knew (restored backup). Start the bookkeeping over, but
           // keep the visible text: the server's content is merged in as ops, never swapped in.
           this.have = 0;
@@ -463,19 +469,11 @@ export class LiveNote {
           this.lastSnapshotUpTo = 0;
         }
         if (m.seq > 0 && m.seqIv) this.haveIvs.set(m.seq, m.seqIv);
-        if (m.reset) {
-          let server = new Rga(this.replica);
-          if (m.snapshot) {
-            const payload = await unseal<SnapshotPayload>(keys.key, keys.id, "snapshot", m.snapshot);
-            server = Rga.fromState(this.replica, payload.state);
-            const ops = opsFromState(payload.state);
-            if (this.composing) this.held.push(...ops);
-            else this.applyRemote(ops);
-            this.lastSnapshotUpTo = m.snapshot.upTo;
-          }
-          this.repair = server;
+        if (this.repairPending) {
+          this.repair = m.snapshot ? await this.mergeSnapshot(m.snapshot) : new Rga(this.replica);
         } else if (m.snapshot) {
-          await this.loadSnapshot(m.snapshot);
+          if (this.rebased) await this.mergeSnapshot(m.snapshot);
+          else await this.loadSnapshot(m.snapshot);
           this.lastSnapshotUpTo = Math.max(this.lastSnapshotUpTo, m.snapshot.upTo);
         }
         return;
@@ -549,6 +547,20 @@ export class LiveNote {
     this.set({ status: { kind: "unreadable" } });
   }
 
+  /**
+   * Adds a server snapshot's content to the visible text as ops (nothing is replaced, so text that
+   * is only here, not in `history`, survives). Returns a replica of exactly the snapshot.
+   */
+  private async mergeSnapshot(s: { upTo: number } & SealedWire): Promise<Rga> {
+    const keys = this.keys!;
+    const payload = await unseal<SnapshotPayload>(keys.key, keys.id, "snapshot", s);
+    const ops = opsFromState(payload.state);
+    if (this.composing) this.held.push(...ops);
+    else this.applyRemote(ops);
+    this.lastSnapshotUpTo = Math.max(this.lastSnapshotUpTo, s.upTo);
+    return Rga.fromState(this.replica, payload.state);
+  }
+
   private async loadSnapshot(s: { upTo: number } & SealedWire): Promise<void> {
     const keys = this.keys!;
     const payload = await unseal<SnapshotPayload>(keys.key, keys.id, "snapshot", s);
@@ -556,6 +568,7 @@ export class LiveNote {
     for (const op of this.history) next.apply(op); // keep anything applied here before the snapshot arrived
     const sel = this.snapshot.selection;
     this.rga = next;
+    this.rebased = true; // from now on the visible CRDT holds content that `history` doesn't
     this.undoer = new UndoManager(next, 500); // undo history doesn't survive a re-base onto a snapshot
     this.setText({ selection: this.clampSelection(sel) });
   }
@@ -633,6 +646,7 @@ export class LiveNote {
   private finishRepair(): void {
     const server = this.repair;
     this.repair = null;
+    this.repairPending = false;
     if (!server) return;
     const missing = opsServerLacks(this.rga, server);
     if (missing.length === 0) return;
