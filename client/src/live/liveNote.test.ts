@@ -651,6 +651,7 @@ describe("LiveNote: repairing after the server lost history", () => {
     await interruptCatchUp(hub);
     await advance(2100);
     await until(() => hub.log.length >= 1 && a.getSnapshot().conn === "live", "repaired after the second connect");
+    expect(hub.welcomes.slice(-2).map((w) => w.reset)).toEqual([true, false]); // the cut really happened
     expect(a.getSnapshot().text).toBe("hello");
     const c = engine(hub);
     await ready(c);
@@ -693,11 +694,33 @@ describe("LiveNote: repairing after the server lost history", () => {
     await interruptCatchUp(hub);
     await advance(2100);
     await until(() => hub.log.length > 2 && b.getSnapshot().conn === "live", "B repaired the server");
+    expect(hub.welcomes.slice(-2).map((w) => w.reset)).toEqual([true, false]); // the cut really happened
     expect(b.getSnapshot().text).toBe("ABCD");
     expect([...seen]).not.toContain("AB");
     const c = engine(hub);
     await ready(c);
     await until(() => c.getSnapshot().text === "ABCD", "newcomer converges");
+  });
+
+  it("RG: a snapshot loaded before synced is never swapped for an older one after a rewind", async () => {
+    const hub = new FakeHub();
+    const a = await snapshottedABCD(hub);
+    hub.withholdSynced = true;
+    const b = engine(hub);
+    void b.start();
+    await until(() => b.getSnapshot().text === "ABCD", "B loaded the ABCD snapshot but is not synced");
+    expect(b.getSnapshot().conn).not.toBe("live");
+    hub.withholdSynced = false;
+    a.dispose();
+    const seen = new Set<string>();
+    b.subscribe(() => seen.add(b.getSnapshot().text));
+    const welcomes = hub.welcomes.length;
+    hub.rewind(2); // B never reached synced, so it reconnects with have 0 and gets the older snapshot
+    await advance(1100);
+    await until(() => hub.welcomes.length === welcomes + 1 && b.getSnapshot().conn === "live", "B reconnected");
+    expect(hub.welcomes[welcomes].reset).toBe(false);
+    expect(b.getSnapshot().text).toBe("ABCD");
+    expect([...seen]).not.toContain("AB");
   });
 
   it("a ~900 KiB note is repaired in frames under the limit", async () => {

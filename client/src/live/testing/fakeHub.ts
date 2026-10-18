@@ -21,7 +21,7 @@ export class FakeHub {
   hellos: number[] = [];
   /** Every hello in full, and the `reset` flag of every welcome sent. */
   helloMsgs: { have: number; haveIv?: string }[] = [];
-  welcomes: { reset: boolean }[] = [];
+  welcomes: { reset: boolean; seq: number }[] = [];
   /** true → welcome and ops are sent but `synced` is not, so a test can cut the connection mid-catch-up. */
   withholdSynced = false;
   private silent = false;
@@ -89,7 +89,7 @@ export class FakeHub {
             have = 0;
           }
         }
-        this.welcomes.push({ reset });
+        this.welcomes.push({ reset, seq: this.log.length });
         const snap = have === 0 ? this.snapshots[this.snapshots.length - 1] ?? null : null;
         const seqIv = latest > 0 ? this.log[latest - 1].iv : "";
         this.sendTo(p, { t: "welcome", seq: latest, here: room.length, snapshot: snap, reset, seqIv });
