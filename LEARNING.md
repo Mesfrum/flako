@@ -358,3 +358,14 @@ One entry per concept, written for future-me coming back after a long break.
   the longest gap between `requestAnimationFrame` callbacks.
 - Lesson: always run a control. A 200 KB `keyboard.insertText` froze the tab for 87 s — but it is just as slow
   on a bare `<textarea>` with no app (quadratic in Chrome's insertText path). A real Ctrl+V took 0.6–1.6 s.
+
+## Stale counts and two-queue ordering
+- A value read under a lock is stale the moment the lock is released: the "here" count captured at join time was
+  already wrong by the time the newcomer's catch-up finished, yet it was broadcast as if current.
+- Each peer's writer does `select` over two channels (direct replies and broadcasts). `select` picks randomly among
+  ready channels, so there is no ordering between the queues: a fresh broadcast can be written *before* an older
+  welcome, and the welcome then wins because the client keeps the last message.
+- Fix: after catch-up, re-read the room size under the lock and announce it to everyone, newcomer included. The
+  welcome was already handed to the writer, so this fresh count is the last word each peer hears.
+- Test: loop many rooms with peers joining together and assert the last count each peer saw equals the true size.
+  Keep every connection open until all peers finish reading, or an early close legitimately changes the counts.

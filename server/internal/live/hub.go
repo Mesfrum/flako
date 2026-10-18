@@ -123,7 +123,10 @@ func (h *Hub) serve(ctx context.Context, cancel context.CancelFunc, conn *websoc
 		h.fail(conn, "catch-up", err)
 		return
 	}
-	h.broadcast(id, p, hereMsg{T: "here", N: here}) // the newcomer got the count in its welcome
+	// The join-time count is stale by now, and the newcomer's writer may deliver queued broadcasts
+	// before its welcome. Announce the CURRENT size to everyone, newcomer included, so the last
+	// word each peer hears is the freshest.
+	h.announceHere(id)
 
 	for {
 		var m inMsg
@@ -276,6 +279,15 @@ func (h *Hub) broadcast(id string, from *peer, v any) {
 	defer h.mu.Unlock()
 	if r := h.rooms[id]; r != nil {
 		h.broadcastLocked(r, from, v)
+	}
+}
+
+// announceHere tells every peer in the room (nobody excluded) how many are in it right now.
+func (h *Hub) announceHere(id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if r := h.rooms[id]; r != nil {
+		h.broadcastLocked(r, nil, hereMsg{T: "here", N: len(r.peers)})
 	}
 }
 

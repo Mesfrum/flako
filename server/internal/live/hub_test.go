@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -358,15 +360,132 @@ func TestHereCountsJoinAndLeave(t *testing.T) {
 	if w, _ := join(t, b, 0); w["here"] != 2.0 {
 		t.Fatalf("B welcome.here = %v, want 2", w["here"])
 	}
-	if m := recvRaw(t, a); m["t"] != "here" || m["n"] != 2.0 {
-		t.Fatalf("A got %v, want here 2", m)
+	// Every join is announced to everyone in the room, the newcomer included, so A may first see its
+	// own "here 1" and B's "here 2" can arrive once or twice; wait for the 2.
+	for m := recvRaw(t, a); m["t"] != "here" || m["n"] != 2.0; m = recvRaw(t, a) {
+		if m["t"] != "here" || m["n"] != 1.0 {
+			t.Fatalf("A got %v, want here 1 or here 2", m)
+		}
 	}
 	b.Close(websocket.StatusNormalClosure, "")
-	if m := recvRaw(t, a); m["t"] != "left" || m["from"] != 2.0 {
+	m := recvRaw(t, a)
+	for m["t"] == "here" && m["n"] == 2.0 { // a duplicate join announcement still in flight
+		m = recvRaw(t, a)
+	}
+	if m["t"] != "left" || m["from"] != 2.0 {
 		t.Fatalf("A got %v, want left from 2", m)
 	}
 	if m := recvRaw(t, a); m["t"] != "here" || m["n"] != 1.0 {
 		t.Fatalf("A got %v, want here 1", m)
+	}
+}
+
+// Peers that join at nearly the same moment must all end up believing the true head count. The
+// race: a count read at join time goes stale, and a peer's writer picks between its direct and
+// broadcast queues in no fixed order, so the last "here" a peer sees can be an old number.
+func TestHereCountConvergesWhenPeersJoinTogether(t *testing.T) {
+	const rooms, peersPerRoom = 100, 3
+	base, _ := newTestServer(t, testOptions())
+
+	type result struct {
+		room, peer, last int
+		err              error
+	}
+	results := make(chan result, rooms*peersPerRoom)
+	dialSlots := make(chan struct{}, 12)
+	for r := 0; r < rooms; r++ {
+		id := fmt.Sprintf("%043d", r) // a distinct, valid note id per room
+		var dialed sync.WaitGroup     // lets every peer of the room say hello together
+		dialed.Add(peersPerRoom)
+		var read sync.WaitGroup // connections stay open until every peer of the room has finished reading
+		read.Add(peersPerRoom)
+		for p := 0; p < peersPerRoom; p++ {
+			go func(r, p int) {
+				res := result{room: r, peer: p}
+				defer func() { results <- res }()
+				readDone := false
+				markRead := func() {
+					if !readDone {
+						readDone = true
+						read.Done()
+					}
+				}
+				defer markRead()
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				dialSlots <- struct{}{} // a few dozen dials at a time keeps the listen backlog from overflowing
+				c, _, err := websocket.Dial(ctx, wsURL(base, id), nil)
+				<-dialSlots
+				dialed.Done()
+				if err != nil {
+					res.err = err
+					return
+				}
+				defer c.CloseNow()
+				defer func() { markRead(); read.Wait() }() // a peer closing early would change the others' counts
+				dialed.Wait()
+				if err := wsjson.Write(ctx, c, map[string]any{"t": "hello", "have": 0}); err != nil {
+					res.err = err
+					return
+				}
+				frames := make(chan map[string]any)
+				go func() {
+					defer close(frames)
+					for {
+						var m map[string]any
+						if wsjson.Read(ctx, c, &m) != nil {
+							return
+						}
+						select {
+						case frames <- m:
+						case <-ctx.Done():
+							return
+						}
+					}
+				}()
+				// Read until welcome has arrived and then nothing new has come for a quiet moment.
+				welcomed := false
+				for {
+					var quiet <-chan time.Time
+					if welcomed {
+						quiet = time.After(150 * time.Millisecond)
+					}
+					select {
+					case m, ok := <-frames:
+						if !ok {
+							res.err = fmt.Errorf("connection ended early")
+							return
+						}
+						switch m["t"] {
+						case "welcome":
+							welcomed = true
+							res.last = int(m["here"].(float64))
+						case "here":
+							res.last = int(m["n"].(float64))
+						}
+					case <-quiet:
+						return
+					case <-ctx.Done():
+						res.err = ctx.Err()
+						return
+					}
+				}
+			}(r, p)
+		}
+	}
+
+	stale := 0
+	for i := 0; i < rooms*peersPerRoom; i++ {
+		res := <-results
+		if res.err != nil {
+			t.Fatalf("room %d peer %d: %v", res.room, res.peer, res.err)
+		}
+		if res.last != peersPerRoom {
+			stale++
+		}
+	}
+	if stale > 0 {
+		t.Fatalf("%d of %d peers ended with a stale head count (want %d everywhere)", stale, rooms*peersPerRoom, peersPerRoom)
 	}
 }
 
