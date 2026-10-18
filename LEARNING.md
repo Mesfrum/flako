@@ -380,6 +380,7 @@ One entry per concept, written for future-me coming back after a long break.
   the tab up from zero (snapshot path), as for a fresh tab. A hello without `haveIv` keeps the old behaviour.
 - The welcome also carries `seqIv` (IV of the server's latest op) so the client can remember a fingerprint to send next time.
 - Mutation check: comparing only seq (ignoring IV) makes the "different IV" tests fail, proving the IV is what matters.
+
 ## Turning CRDT state back into ops
 - A snapshot (RgaState) and an op log describe the same document, so a snapshot can be replayed as ops: one ins per run in document order, then a del/undel carrying each run's stamp. A replica that already holds some of the history just applies them; idempotence and last-writer-wins stamps make the rest a no-op.
 - Anchoring each run on the previous element in document order, tombstones included, works: RGA's skip-bigger-ids rule only compares against elements after the anchor, so a replica missing some elements still places the run identically. Anchoring on the previous visible char breaks it (mutation-checked).
