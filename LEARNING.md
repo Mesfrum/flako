@@ -106,6 +106,17 @@ One entry per concept, written for future-me coming back after a long break.
 ## Crypto: passphrase entropy
 - 4 words from 7772 → 4 × log2(7772) ≈ 51.7 bits. Each bit doubles an attacker's work.
 - Length alone lies: "correcthorse" is 2 dictionary words, not 12 random letters.
+- Strength belongs to the *process* that picked the name, not the string. Information bits
+  (log2 of the options) ≠ storage bits (8 per byte): a random hex char is stored in 8 bits but
+  carries 4. Publishing the wordlist is fine (Kerckhoffs): the 51.7 bits already assume the
+  attacker has it; the secret is which words were picked.
+- `estimateStrength` charges typed names a flat 2 bits/char and caps them at "fair", so a random
+  32-char hex string (128 bits) shows "fair". A precise-looking "~64 bits" made that guess look
+  like a measurement, so the UI now shows only the weak/fair/strong message, no number.
+- R2 keeps objects forever by default; only lifecycle rules delete them, and a rule counts
+  object *age*, not whether a newer copy exists. Downtime longer than the rule's N days =
+  every backup expires. Hence N = 30 and the 12 h keepalive (an idle-but-running app still
+  re-snapshots, so its files stay young).
 
 ## Tooling: Vite proxy + Vitest
 - `server.proxy: { "/api": "http://localhost:8080" }` — dev browser sees one origin, so no CORS.

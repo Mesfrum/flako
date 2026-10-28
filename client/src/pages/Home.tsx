@@ -38,7 +38,7 @@ export default function Home() {
       </button>
       {strength && (
         <p className="text-sm" data-level={strength.level}>
-          {strength.message} (~{strength.bits} bits)
+          {strength.message}
         </p>
       )}
     </main>

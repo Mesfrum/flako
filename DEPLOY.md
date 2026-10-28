@@ -80,8 +80,12 @@ and re-sends whatever the server lacks.
    Write covers everything the container does: Cloudflare documents it as "read, write, and list
    objects in specific buckets", and listing is how a boot finds the newest replica.
 5. Bucket -> **Settings** -> **Object Lifecycle Rules** -> **Add rule**: name `expire-old-boots`,
-   prefix `flako/`, action **delete objects** after **7 days** (keep N >= 7). Every boot leaves a
-   replica path behind; this rule cleans up old ones. The *current* boot's path is unaffected in
+   prefix `flako/`, action **delete objects** after **30 days** (keep N >= 30). Every boot leaves a
+   replica path behind; this rule cleans up old ones. **Warning:** the rule counts age, not
+   whether a newer backup exists. If the app is down (no instance running, so nothing re-snapshots)
+   for longer than N days, the rule deletes *every* backup and the next boot starts empty. N is
+   how long the app may stay down; old boot paths are tiny, so a large N costs almost nothing.
+   The *current* boot's path is unaffected in
    practice: Litestream rewrites its snapshot daily (the 12 h keepalive guarantees a change to
    snapshot) and its own 72 h retention deletes older files first, so its newest restorable set is
    always less than ~2 days old. R2 deletes expired objects within about 24 h of expiry. (R2's

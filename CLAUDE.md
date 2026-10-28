@@ -9,7 +9,7 @@ over WebSockets, remote cursors, offline merge).
 - `master` — deployed: Render free tier (Docker, auto-deploys on push) behind Cloudflare at flako.in,
   UptimeRobot keeps it warm; the Oracle VPS + Caddy compose path is the documented alternative.
   **Never merge into it; the owner does cutovers.**
-- `phase2-live` — current work (live collaboration). `archive/phase1` — preserved pre-live version.
+- Feature work goes on a branch off `master`. `archive/phase1` — preserved pre-live version.
 
 ## Commands
 ```bash
