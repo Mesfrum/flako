@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { noteKeys } from "../crypto/keyCache";
+import { ThemeToggle } from "../theme/ThemeToggle";
 import { estimateStrength, generateName, normalizeName, type StrengthLevel } from "../names/names";
 
 // Wait for a typing pause before spending ~0.5 s and 64 MiB on a name.
@@ -38,8 +39,9 @@ export default function Home() {
 
   return (
     <div className="flex min-h-dvh flex-col px-4 sm:px-8">
-      <header className="mx-auto flex h-16 w-full max-w-5xl items-center">
+      <header className="mx-auto flex h-16 w-full max-w-5xl items-center justify-between">
         <span className="text-[15px] font-semibold tracking-tight">flako</span>
+        <ThemeToggle />
       </header>
 
       <main className="mx-auto grid w-full max-w-5xl flex-1 content-center gap-x-16 gap-y-14 py-12 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-center">
@@ -68,12 +70,12 @@ export default function Home() {
                 autoCorrect="off"
                 spellCheck={false}
                 aria-describedby="name-strength"
-                className="h-13 w-full min-w-0 rounded-md sm:flex-1 border border-control bg-surface px-4 text-lg placeholder:text-muted"
+                className="h-13 w-full min-w-0 rounded-box sm:flex-1 border border-control bg-surface px-4 text-lg placeholder:text-muted"
               />
               <button
                 type="submit"
                 disabled={!normalized}
-                className="h-13 rounded-md bg-primary px-7 text-base font-medium text-on-primary transition-[transform,opacity] active:scale-[0.98] disabled:opacity-35"
+                className="h-13 rounded-box bg-primary px-7 text-base font-medium text-on-primary transition-[transform,opacity] active:scale-[0.98] disabled:opacity-35"
               >
                 Open note
               </button>
@@ -83,7 +85,7 @@ export default function Home() {
               <button
                 type="button"
                 onClick={generate}
-                className="h-9 rounded-md bg-raised px-3.5 text-sm font-medium transition-[transform,background-color] hover:bg-control active:scale-[0.98]"
+                className="h-9 rounded-box bg-raised px-3.5 text-sm font-medium transition-[transform,background-color] hover:bg-line active:scale-[0.98]"
               >
                 Generate a strong name
               </button>
@@ -99,7 +101,7 @@ export default function Home() {
           </form>
         </div>
 
-        <section aria-labelledby="how" className="rounded-lg bg-surface p-6">
+        <section aria-labelledby="how" className="rounded-box bg-surface p-6">
           <h2 id="how" className="sr-only">
             How flako works
           </h2>

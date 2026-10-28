@@ -105,7 +105,7 @@ export function LiveTextarea(props: Props) {
             onRedo();
           }
         }}
-        className={`block h-full w-full resize-none rounded-lg border border-line bg-surface text-ink transition-[opacity,border-color] duration-150 placeholder:text-muted focus:border-control focus:outline-none disabled:opacity-50 ${TEXT_CLASSES}`}
+        className={`block h-full w-full resize-none rounded-box border border-line bg-surface text-ink transition-[opacity,border-color] duration-150 placeholder:text-muted focus:border-control focus:outline-none disabled:opacity-50 ${TEXT_CLASSES}`}
       />
       <RemoteCursors
         text={text}

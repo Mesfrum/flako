@@ -505,3 +505,9 @@ One entry per concept, written for future-me coming back after a long break.
   `npm run build`, a server that's already running still serves the old UI; restart it.
 - **Focus must stay visible**: `focus:outline-none` with nothing in its place hides where the keyboard
   is. Now one global `:focus-visible` ring; the editor sheet darkens its border instead.
+- **No theme flash**: React runs after the first paint, so a theme applied from React would show
+  the wrong theme for a moment. A tiny inline script in `index.html` reads the saved choice and sets
+  `<html data-theme>` before anything draws. The CSS then has three cases: light (default), dark
+  from the system unless `data-theme="light"`, and dark whenever `data-theme="dark"`.
+- **`go run` leaves an orphan on Windows**: stopping `go run` can leave the server it compiled
+  still running and holding the port. Check `Get-NetTCPConnection -LocalPort 8080` after stopping.

@@ -5,6 +5,7 @@ import { copyText, type CopyResult } from "../components/copyText";
 import { LiveTextarea } from "../components/LiveTextarea";
 import type { LiveSnapshot, RemoteCursor } from "../live/liveNote";
 import { useLiveNote } from "../live/useLiveNote";
+import { ThemeToggle } from "../theme/ThemeToggle";
 
 function nameFromPath(pathname: string): string {
   const raw = pathname.slice(1);
@@ -62,7 +63,7 @@ function NoteEditor({ name }: { name: string }) {
         A note is stored under this name, but it can’t be decrypted with it. Editing is off so nothing gets overwritten.
         <Link
           to="/"
-          className="mt-6 inline-flex h-10 items-center rounded-md bg-primary px-4 text-sm font-medium text-on-primary"
+          className="mt-6 inline-flex h-10 items-center rounded-box bg-primary px-4 text-sm font-medium text-on-primary"
         >
           Open another note
         </Link>
@@ -75,7 +76,7 @@ function NoteEditor({ name }: { name: string }) {
         <button
           type="button"
           onClick={() => location.reload()}
-          className="mt-6 inline-flex h-10 items-center rounded-md bg-primary px-4 text-sm font-medium text-on-primary"
+          className="mt-6 inline-flex h-10 items-center rounded-box bg-primary px-4 text-sm font-medium text-on-primary"
         >
           Reload
         </button>
@@ -103,17 +104,19 @@ function NoteEditor({ name }: { name: string }) {
       <header className="flex flex-wrap items-center gap-x-4 py-2 sm:h-16 sm:flex-nowrap sm:py-0">
         <Link
           to="/"
-          className="-mx-2 flex h-11 items-center rounded-md px-2 text-[15px] font-semibold tracking-tight hover:bg-raised"
+          className="-mx-2 flex h-11 items-center rounded-box px-2 text-[15px] font-semibold tracking-tight hover:bg-raised"
           title="Open another note"
         >
           flako
         </Link>
-        <h1 className="order-last min-w-0 basis-full truncate pb-2 text-[17px] font-medium sm:order-none sm:basis-auto sm:flex-1 sm:pb-0">
-          {name}
-        </h1>
-        <div className="ml-auto flex items-center gap-3">
+        <div className="order-last flex min-w-0 basis-full items-center gap-1 pb-2 sm:order-none sm:flex-1 sm:basis-auto sm:pb-0">
+          <h1 className="min-w-0 truncate text-[17px] font-medium">{name}</h1>
+          <CopyLinkButton />
+        </div>
+        <div className="ml-auto flex items-center gap-2">
           <Status conn={conn} cursors={note.cursors} />
           <CopyButton text={note.text} disabled={status.kind !== "ready"} />
+          <ThemeToggle />
         </div>
       </header>
       <main className="flex min-h-0 flex-1 flex-col pb-3 sm:pb-6">{body}</main>
@@ -153,7 +156,7 @@ function Presence({ cursors }: { cursors: RemoteCursor[] }) {
 
 function Message({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="flex flex-1 items-center justify-center rounded-lg border border-line bg-surface p-6">
+    <div className="flex flex-1 items-center justify-center rounded-box border border-line bg-surface p-6">
       <div className="flex max-w-md flex-col items-start text-[15px] leading-relaxed">
         <h2 className="mb-2 text-lg font-semibold">{title}</h2>
         {children}
@@ -168,27 +171,83 @@ const COPY_LABEL: Record<"copy" | CopyResult, string> = {
   "copy failed": "Couldn’t copy",
 };
 
-function CopyButton({ text, disabled }: { text: string; disabled: boolean }) {
-  const [label, setLabel] = useState<"copy" | CopyResult>("copy");
+/** Shows a copy result for a moment, then falls back to the idle label. */
+function useCopy(): [CopyResult | null, (text: string) => Promise<void>] {
+  const [result, setResult] = useState<CopyResult | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
 
-  const copy = async () => {
-    setLabel(await copyText(text, navigator.clipboard));
+  const copy = async (text: string) => {
+    setResult(await copyText(text, navigator.clipboard));
     clearTimeout(timer.current);
-    timer.current = setTimeout(() => setLabel("copy"), 1500);
+    timer.current = setTimeout(() => setResult(null), 1500);
   };
+  return [result, copy];
+}
 
+function CopyButton({ text, disabled }: { text: string; disabled: boolean }) {
+  const [result, copy] = useCopy();
   return (
     <button
       type="button"
-      onClick={copy}
+      onClick={() => copy(text)}
       disabled={disabled}
-      aria-label={label === "copy" ? "Copy the whole note" : undefined}
-      className={`h-9 min-w-[4.5rem] rounded-md bg-raised px-3 text-sm font-medium transition-[transform,background-color] hover:bg-control active:scale-[0.97] disabled:opacity-40 disabled:hover:bg-raised ${label === "copy failed" ? "text-negative" : ""}`}
+      aria-label={result ? undefined : "Copy the whole note"}
+      className={`h-9 min-w-[4.5rem] rounded-box bg-raised px-3 text-sm font-medium transition-[transform,background-color] hover:bg-line active:scale-[0.97] disabled:opacity-40 disabled:hover:bg-raised ${result === "copy failed" ? "text-negative" : ""}`}
     >
-      {COPY_LABEL[label]}
+      {COPY_LABEL[result ?? "copy"]}
     </button>
+  );
+}
+
+/** Copies this page's address. The name in it is the key, so this is how a note is shared. */
+function CopyLinkButton() {
+  const [result, copy] = useCopy();
+  const label = result === "copied" ? "Link copied" : result === "copy failed" ? "Couldn’t copy link" : "Copy link";
+  return (
+    <span className="flex shrink-0 items-center">
+      <button
+        type="button"
+        onClick={() => copy(location.href)}
+        aria-label={label}
+        title="Copy link to this note"
+        className="grid size-8 place-items-center rounded-box text-muted transition-colors hover:bg-raised hover:text-ink"
+      >
+        {result === "copied" ? <CheckIcon /> : <LinkIcon />}
+      </button>
+      <span aria-live="polite" className={`text-sm ${result === "copy failed" ? "text-negative" : "text-muted"}`}>
+        {result && label}
+      </span>
+    </span>
+  );
+}
+
+const iconProps = {
+  width: 16,
+  height: 16,
+  viewBox: "0 0 24 24",
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 1.75,
+  strokeLinecap: "round" as const,
+  strokeLinejoin: "round" as const,
+  "aria-hidden": true,
+};
+
+function LinkIcon() {
+  return (
+    <svg {...iconProps}>
+      <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.5 1.5" />
+      <path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.5-1.5" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg {...iconProps}>
+      <path d="M5 12.5l4.5 4.5L19 7.5" />
+    </svg>
   );
 }
 
