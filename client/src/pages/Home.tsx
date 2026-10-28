@@ -44,7 +44,7 @@ export default function Home() {
         <ThemeToggle />
       </header>
 
-      <main className="mx-auto grid w-full max-w-5xl flex-1 content-center gap-x-16 gap-y-14 py-12 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-center">
+      <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col justify-center py-12">
         <div className="max-w-2xl">
           <h1 className="text-[32px] leading-[1.1] font-semibold tracking-[-0.02em] text-balance sm:text-[44px]">
             Encrypted notes, opened by name
@@ -100,34 +100,7 @@ export default function Home() {
             </div>
           </form>
         </div>
-
-        <section aria-labelledby="how" className="rounded-box bg-surface p-6">
-          <h2 id="how" className="sr-only">
-            How flako works
-          </h2>
-          <dl className="grid gap-6 text-[15px] leading-relaxed">
-            <Fact term="Nothing readable leaves your browser">
-              The name becomes an AES-256 key on your device (Argon2id, then HKDF). The server stores ciphertext under a
-              hash of the name and never sees the name or your words.
-            </Fact>
-            <Fact term="Write together, live">
-              Share the name and edit at the same time. Everyone’s cursor shows in its own colour.
-            </Fact>
-            <Fact term="Keeps working offline">
-              Edits made without a connection wait in your browser and merge in when you’re back.
-            </Fact>
-          </dl>
-        </section>
       </main>
-    </div>
-  );
-}
-
-function Fact({ term, children }: { term: string; children: string }) {
-  return (
-    <div>
-      <dt className="font-medium">{term}</dt>
-      <dd className="mt-1 text-muted">{children}</dd>
     </div>
   );
 }
