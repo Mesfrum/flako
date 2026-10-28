@@ -12,6 +12,7 @@ interface Props {
   onComposing(on: boolean): void;
   cursors: RemoteCursor[];
   placeholder: string;
+  disabled?: boolean; // shown but locked while the note loads
 }
 
 // Shared by the textarea and the cursor overlay so both wrap text identically.
@@ -19,10 +20,18 @@ const TEXT_CLASSES = "p-4 font-mono text-base leading-6 whitespace-pre-wrap brea
 
 /** A controlled textarea driven by the LiveNote engine, with remote cursors drawn on top. */
 export function LiveTextarea(props: Props) {
-  const { text, selection, onChange, onSelect, onUndo, onRedo, onComposing, cursors, placeholder } = props;
+  const { text, selection, onChange, onSelect, onUndo, onRedo, onComposing, cursors, placeholder, disabled } = props;
   const ref = useRef<HTMLTextAreaElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [box, setBox] = useState({ width: 0, height: 0 });
+
+  // autoFocus is ignored on a disabled textarea, so focus it once it unlocks (unless the user
+  // has already moved focus somewhere else, e.g. into the address bar or a button).
+  useEffect(() => {
+    const el = ref.current;
+    if (disabled || !el) return;
+    if (document.activeElement === null || document.activeElement === document.body) el.focus();
+  }, [disabled]);
 
   // Put the caret where the engine says, before paint (remote edits must not move it).
   useLayoutEffect(() => {
@@ -69,7 +78,8 @@ export function LiveTextarea(props: Props) {
         ref={ref}
         autoFocus
         value={text}
-        placeholder={placeholder}
+        placeholder={disabled ? "" : placeholder}
+        disabled={disabled}
         spellCheck={false}
         onChange={(e) => onChange(e.target.value, e.target.selectionStart, e.target.selectionEnd)}
         onSelect={reportSelection}
@@ -91,7 +101,7 @@ export function LiveTextarea(props: Props) {
             onRedo();
           }
         }}
-        className={`block min-h-[70vh] w-full resize-none border focus:outline-none ${TEXT_CLASSES}`}
+        className={`block min-h-[70vh] w-full resize-none border transition-opacity duration-150 focus:outline-none disabled:bg-transparent disabled:opacity-50 ${TEXT_CLASSES}`}
       />
       <RemoteCursors
         text={text}

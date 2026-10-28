@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
-import { deriveNoteKeysInWorker } from "../crypto/deriveInWorker";
+import { noteKeys } from "../crypto/keyCache";
 import { createNotesApi } from "../notes/api";
 import { createPendingStore } from "../notes/pending";
 import { LiveNote } from "./liveNote";
@@ -18,7 +18,7 @@ export function useLiveNote(name: string) {
         api,
         outbox: createOutbox(localStorage),
         legacyPending: createPendingStore(localStorage),
-        derive: deriveNoteKeysInWorker,
+        derive: noteKeys.get, // reuses Home's prefetch when the name was typed there
       }),
     [name],
   );

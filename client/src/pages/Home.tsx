@@ -1,12 +1,29 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
+import { noteKeys } from "../crypto/keyCache";
 import { estimateStrength, generateName, normalizeName } from "../names/names";
+
+// Wait for a typing pause before spending ~0.5 s and 64 MiB on a name.
+const PREFETCH_PAUSE_MS = 300;
 
 export default function Home() {
   const navigate = useNavigate();
   const [name, setName] = useState("");
   const normalized = normalizeName(name);
   const strength = normalized ? estimateStrength(normalized) : null;
+
+  // Derive the key while the name is still being typed, so opening the note is instant.
+  useEffect(() => {
+    if (!normalized) return;
+    const t = setTimeout(() => noteKeys.prefetch(normalized), PREFETCH_PAUSE_MS);
+    return () => clearTimeout(t);
+  }, [normalized]);
+
+  const generate = () => {
+    const next = generateName();
+    setName(next);
+    noteKeys.prefetch(normalizeName(next)); // no typing pause to wait for
+  };
 
   const open = (e: FormEvent) => {
     e.preventDefault();
@@ -33,7 +50,7 @@ export default function Home() {
           open
         </button>
       </form>
-      <button type="button" onClick={() => setName(generateName())} className="self-start text-sm underline">
+      <button type="button" onClick={generate} className="self-start text-sm underline">
         generate one
       </button>
       {strength && (

@@ -474,3 +474,16 @@ One entry per concept, written for future-me coming back after a long break.
   checked against the OLD `have` and then forgotten, leaving a permanent gap: `have` never advanced again that
   session. Fix: remember what this socket delivered before its welcome and keep the seqs newer than welcome.seq.
 - General lesson: when a protocol has a "start over" message, anything that raced ahead of it belongs to the new era.
+
+## UX: perceived performance
+- Speed users *feel* is not speed the code has. A centered "connecting…" screen makes a 1 s load
+  feel broken; the same 1 s with the page already drawn feels like loading.
+- Tricks used in flako: (1) **skeleton** — draw the real layout at once, lock the textarea until
+  the note arrives; (2) **delayed indicator** — only show a status if a step takes > 300 ms, so
+  fast loads never flash text (a flash reads as "it was slow"); (3) **prefetch on intent** —
+  start the slow Argon2 work while the name is still being typed (after a 300 ms pause, a
+  *debounce*), so it's done by the time Enter is pressed.
+- Prefetching costs work that may be wasted. Bound it: one derivation at a time, skip names typed
+  past, keep only the latest result, in memory only (nothing persists in the browser).
+- `navigator.clipboard` exists only in secure contexts (https or localhost) and can be refused,
+  so copy must report failure, not assume success.
