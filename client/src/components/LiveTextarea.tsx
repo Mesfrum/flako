@@ -12,15 +12,18 @@ interface Props {
   onComposing(on: boolean): void;
   cursors: RemoteCursor[];
   placeholder: string;
+  label: string; // accessible name; the textarea has no visible label
   disabled?: boolean; // shown but locked while the note loads
 }
 
 // Shared by the textarea and the cursor overlay so both wrap text identically.
-const TEXT_CLASSES = "p-4 font-mono text-base leading-6 whitespace-pre-wrap break-words";
+// Monospace on purpose: notes are plain text, so pasted code, lists and tables keep their columns.
+const TEXT_CLASSES = "px-4 py-4 sm:px-7 sm:py-6 font-mono text-[15px] leading-[1.7] whitespace-pre-wrap break-words";
 
 /** A controlled textarea driven by the LiveNote engine, with remote cursors drawn on top. */
 export function LiveTextarea(props: Props) {
-  const { text, selection, onChange, onSelect, onUndo, onRedo, onComposing, cursors, placeholder, disabled } = props;
+  const { text, selection, onChange, onSelect, onUndo, onRedo, onComposing, cursors, placeholder, label, disabled } =
+    props;
   const ref = useRef<HTMLTextAreaElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [box, setBox] = useState({ width: 0, height: 0 });
@@ -73,12 +76,13 @@ export function LiveTextarea(props: Props) {
   };
 
   return (
-    <div className="relative">
+    <div className="relative min-h-0 flex-1">
       <textarea
         ref={ref}
         autoFocus
         value={text}
         placeholder={disabled ? "" : placeholder}
+        aria-label={label}
         disabled={disabled}
         spellCheck={false}
         onChange={(e) => onChange(e.target.value, e.target.selectionStart, e.target.selectionEnd)}
@@ -101,7 +105,7 @@ export function LiveTextarea(props: Props) {
             onRedo();
           }
         }}
-        className={`block min-h-[70vh] w-full resize-none border transition-opacity duration-150 focus:outline-none disabled:bg-transparent disabled:opacity-50 ${TEXT_CLASSES}`}
+        className={`block h-full w-full resize-none rounded-lg border border-line bg-surface text-ink transition-[opacity,border-color] duration-150 placeholder:text-muted focus:border-control focus:outline-none disabled:opacity-50 ${TEXT_CLASSES}`}
       />
       <RemoteCursors
         text={text}

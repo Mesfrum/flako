@@ -78,7 +78,7 @@ const FIRST_RETRY_MS = 1000;
 const MAX_RETRY_MS = 30_000;
 
 /** Cursor colours; one is picked at random per visit, so a colour doesn't identify a person. */
-export const CURSOR_COLORS = ["#e4572e", "#29335c", "#f3a712", "#669bbc", "#a8c686", "#b56576", "#6d597a", "#2a9d8f"];
+export const CURSOR_COLORS = ["#e4572e", "#d65db1", "#f3a712", "#669bbc", "#a8c686", "#b56576", "#6d597a", "#2a9d8f"];
 
 const encoder = new TextEncoder();
 

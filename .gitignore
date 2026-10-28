@@ -127,3 +127,6 @@ server/internal/web/dist/*
 !server/internal/web/dist/.gitkeep
 docker/test/wsclient/wsclient
 docker/test/wsclient/wsclient.exe
+
+# design-skill screenshots and reports
+.taste-skill/

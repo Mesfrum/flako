@@ -487,3 +487,21 @@ One entry per concept, written for future-me coming back after a long break.
   past, keep only the latest result, in memory only (nothing persists in the browser).
 - `navigator.clipboard` exists only in secure contexts (https or localhost) and can be refused,
   so copy must report failure, not assume success.
+
+## UI restyle: design tokens, dark mode, and two layout traps
+- **Design tokens**: every colour is a CSS custom property (`--ground`, `--text`, `--live` …) in `index.css`.
+  Components only use the token names (`bg-ground`, `text-muted`), never raw hex. Dark mode is then one
+  `@media (prefers-color-scheme: dark)` block that redefines the variables; no component changes.
+- Tailwind v4's `@theme inline { --color-ground: var(--ground); }` turns a variable into utility classes.
+  `inline` makes the class point at the variable itself, so it follows the dark-mode override.
+- **Colour as signal**: the chrome is ink only. Colour marks state: blue dot = live, amber = offline,
+  red = full; cursor colours = people. When everything is grey, the one coloured dot is what you read.
+- **Self-hosted fonts** (`@fontsource-variable/geist`): fonts loaded from Google would tell Google about
+  every visit. For a privacy app, they ship inside our own bundle instead.
+- **Trap 1, `flex-1` in a column**: `flex: 1 1 0%` sets the basis (starting size) along the main axis to 0.
+  In a row that's the width (fine); in a stacked column it's the height, so an input with `h-13`
+  collapsed on phones. Apply `flex-1` only at the width where the row layout kicks in (`sm:flex-1`).
+- **Trap 2, `go:embed` is compile-time**: the Go binary copies `web/dist` in when it compiles. After
+  `npm run build`, a server that's already running still serves the old UI; restart it.
+- **Focus must stay visible**: `focus:outline-none` with nothing in its place hides where the keyboard
+  is. Now one global `:focus-visible` ring; the editor sheet darkens its border instead.

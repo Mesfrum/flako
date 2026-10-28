@@ -1,1 +1,89 @@
 @import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+/* Ink on paper: the chrome has no colour. The one hue marks what is live (presence, the
+   people here); status colours appear only as small signals. Fonts are self-hosted so a
+   visit never reaches a third party. */
+:root {
+  color-scheme: light;
+  --ground: #f4f3f1;
+  --surface: #ffffff;
+  --raised: #e9e8e5;
+  --border: #e3e2df;
+  --control: #cfcdc9;
+  --text: #0a0a0a;
+  --muted: #5f5e5b;
+  --primary: #141414;
+  --on-primary: #ffffff;
+  --live: #1d5fbf;
+  --positive: #247b50;
+  --warning: #92400e;
+  --negative: #c4242a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --ground: #0b0b0b;
+    --surface: #151515;
+    --raised: #232323;
+    --border: #262626;
+    --control: #3d3d3d;
+    --text: #f2f2f2;
+    --muted: #a3a3a3;
+    --primary: #f2f2f2;
+    --on-primary: #0b0b0b;
+    --live: #6ea2f0;
+    --positive: #4fbf7f;
+    --warning: #e9a23b;
+    --negative: #f26b6b;
+  }
+}
+
+@theme inline {
+  --font-sans: "Geist Variable", system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, monospace;
+  --color-ground: var(--ground);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-line: var(--border);
+  --color-control: var(--control);
+  --color-ink: var(--text);
+  --color-muted: var(--muted);
+  --color-primary: var(--primary);
+  --color-on-primary: var(--on-primary);
+  --color-live: var(--live);
+  --color-positive: var(--positive);
+  --color-warning: var(--warning);
+  --color-negative: var(--negative);
+}
+
+@layer base {
+  html {
+    background: var(--ground);
+    color: var(--text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--live) 28%, transparent);
+  }
+  /* One focus style everywhere: a 2px ink ring that never shifts layout. */
+  :focus-visible {
+    outline: 2px solid var(--text);
+    outline-offset: 2px;
+  }
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
